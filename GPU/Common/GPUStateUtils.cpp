@@ -1236,6 +1236,30 @@ static void ConvertBlendState(GenericBlendState &blendState, FBReadSetting useFB
 	if (PSP_CoreParameter().compat.flags().ReduceBloomStrength) {
 		const int bloomReduction = std::clamp(g_Config.iGE2BloomReductionPercent, 0, 100);
 		const int bloomScalePercent = 100 - bloomReduction;
+		auto scaleBloomFixPreserveSaturation = [bloomScalePercent](u32 fixColor) {
+			u32 r = (fixColor >> 0) & 0xFF;
+			u32 g = (fixColor >> 8) & 0xFF;
+			u32 b = (fixColor >> 16) & 0xFF;
+
+			u32 maxc = std::max(r, std::max(g, b));
+			u32 minc = std::min(r, std::min(g, b));
+
+			// Preserve more colorful bloom while still reducing washed-out white bloom.
+			// 0% chroma keeps full reduction, high chroma restores up to 60% of reduced amount.
+			int preservePercent = 0;
+			if (maxc > 0) {
+				preservePercent = (int)((maxc - minc) * 60 / maxc);
+			}
+
+			const int reducedPart = 100 - bloomScalePercent;
+			const int effectiveScalePercent = bloomScalePercent + reducedPart * preservePercent / 100;
+
+			r = r * effectiveScalePercent / 100;
+			g = g * effectiveScalePercent / 100;
+			b = b * effectiveScalePercent / 100;
+
+			return (b << 16) | (g << 8) | r;
+		};
 
 		// Detect bloom-specific blending patterns:
 		// 1. Additive blending (ADD equation)
@@ -1273,16 +1297,10 @@ static void ConvertBlendState(GenericBlendState &blendState, FBReadSetting useFB
 		if (isBloomBlendMode) {
 			// Scale bloom contribution according to user-configured reduction percent.
 			if (blendFuncA == GE_SRCBLEND_FIXA) {
-				uint32_t r = ((fixA >> 0) & 0xFF) * bloomScalePercent / 100;
-				uint32_t g = ((fixA >> 8) & 0xFF) * bloomScalePercent / 100;
-				uint32_t b = ((fixA >> 16) & 0xFF) * bloomScalePercent / 100;
-				fixA = (b << 16) | (g << 8) | r;
+				fixA = scaleBloomFixPreserveSaturation(fixA);
 			}
 			if (blendFuncB == GE_DSTBLEND_FIXB) {
-				uint32_t r = ((fixB >> 0) & 0xFF) * bloomScalePercent / 100;
-				uint32_t g = ((fixB >> 8) & 0xFF) * bloomScalePercent / 100;
-				uint32_t b = ((fixB >> 16) & 0xFF) * bloomScalePercent / 100;
-				fixB = (b << 16) | (g << 8) | r;
+				fixB = scaleBloomFixPreserveSaturation(fixB);
 			}
 		}
 	}
