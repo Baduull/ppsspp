@@ -1232,17 +1232,56 @@ static void ConvertBlendState(GenericBlendState &blendState, FBReadSetting useFB
 	u32 fixB = gstate.getFixB();
 	
 	// Reduce bloom strength by 60% for God Eater 2
+	// Only target additive blending operations commonly used for bloom compositing
 	if (PSP_CoreParameter().compat.flags().ReduceBloomStrength) {
-		// Multiply color components by 0.4 (40% of original, reducing by 60%)
-		uint32_t r = ((fixA >> 0) & 0xFF) * 40 / 100;
-		uint32_t g = ((fixA >> 8) & 0xFF) * 40 / 100;
-		uint32_t b = ((fixA >> 16) & 0xFF) * 40 / 100;
-		fixA = (b << 16) | (g << 8) | r;
+		// Detect bloom-specific blending patterns:
+		// 1. Additive blending (ADD equation)
+		// 2. Common bloom blend modes: ONE+ONE, SRC_ALPHA+ONE, FIXA with high values
+		// 3. Small render targets (bloom blur passes are typically < 272 height)
+		bool isAdditiveBlend = (blendFuncEq == GE_BLENDMODE_MUL_AND_ADD);
+		bool isBloomBlendMode = false;
 		
-		r = ((fixB >> 0) & 0xFF) * 40 / 100;
-		g = ((fixB >> 8) & 0xFF) * 40 / 100;
-		b = ((fixB >> 16) & 0xFF) * 40 / 100;
-		fixB = (b << 16) | (g << 8) | r;
+		// Check for typical bloom blending patterns
+		if (isAdditiveBlend) {
+			// ONE + ONE (pure additive - most common for bloom)
+			if ((blendFuncA == GE_SRCBLEND_SRCALPHA || blendFuncA == GE_SRCBLEND_DSTCOLOR) && 
+			    (blendFuncB == GE_DSTBLEND_SRCCOLOR || blendFuncB == GE_DSTBLEND_INVSRCCOLOR)) {
+				isBloomBlendMode = true;
+			}
+			// FIXA with bright colors (additive bloom composite)
+			else if (blendFuncA == GE_SRCBLEND_FIXA && blendFuncB == GE_DSTBLEND_SRCCOLOR) {
+				// Check if fixA is bright (typical for bloom)
+				uint32_t r = (fixA >> 0) & 0xFF;
+				uint32_t g = (fixA >> 8) & 0xFF;
+				uint32_t b = (fixA >> 16) & 0xFF;
+				// If color is bright enough (average > 128), likely bloom
+				if ((r + g + b) / 3 > 128) {
+					isBloomBlendMode = true;
+				}
+			}
+			// Small render target check (bloom blur passes)
+			// God Eater 2 uses smaller buffers for bloom (typically 128x64 or 256x128)
+			else if (gstate_c.curRTHeight <= 144 && gstate_c.curRTWidth <= 256) {
+				isBloomBlendMode = true;
+			}
+		}
+		
+		// Apply bloom reduction only to detected bloom operations
+		if (isBloomBlendMode) {
+			// Reduce to 40% (60% reduction)
+			if (blendFuncA == GE_SRCBLEND_FIXA) {
+				uint32_t r = ((fixA >> 0) & 0xFF) * 40 / 100;
+				uint32_t g = ((fixA >> 8) & 0xFF) * 40 / 100;
+				uint32_t b = ((fixA >> 16) & 0xFF) * 40 / 100;
+				fixA = (b << 16) | (g << 8) | r;
+			}
+			if (blendFuncB == GE_DSTBLEND_FIXB) {
+				uint32_t r = ((fixB >> 0) & 0xFF) * 40 / 100;
+				uint32_t g = ((fixB >> 8) & 0xFF) * 40 / 100;
+				uint32_t b = ((fixB >> 16) & 0xFF) * 40 / 100;
+				fixB = (b << 16) | (g << 8) | r;
+			}
+		}
 	}
 
 	if (blendFuncA > GE_SRCBLEND_FIXA)
