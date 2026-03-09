@@ -1234,6 +1234,9 @@ static void ConvertBlendState(GenericBlendState &blendState, FBReadSetting useFB
 	// Reduce bloom strength by 60% for God Eater 2
 	// Only target additive blending operations commonly used for bloom compositing
 	if (PSP_CoreParameter().compat.flags().ReduceBloomStrength) {
+		const int bloomReduction = std::clamp(g_Config.iGE2BloomReductionPercent, 0, 100);
+		const int bloomScalePercent = 100 - bloomReduction;
+
 		// Detect bloom-specific blending patterns:
 		// 1. Additive blending (ADD equation)
 		// 2. Common bloom blend modes: ONE+ONE, SRC_ALPHA+ONE, FIXA with high values
@@ -1268,17 +1271,17 @@ static void ConvertBlendState(GenericBlendState &blendState, FBReadSetting useFB
 		
 		// Apply bloom reduction only to detected bloom operations
 		if (isBloomBlendMode) {
-			// Reduce to 40% (60% reduction)
+			// Scale bloom contribution according to user-configured reduction percent.
 			if (blendFuncA == GE_SRCBLEND_FIXA) {
-				uint32_t r = ((fixA >> 0) & 0xFF) * 40 / 100;
-				uint32_t g = ((fixA >> 8) & 0xFF) * 40 / 100;
-				uint32_t b = ((fixA >> 16) & 0xFF) * 40 / 100;
+				uint32_t r = ((fixA >> 0) & 0xFF) * bloomScalePercent / 100;
+				uint32_t g = ((fixA >> 8) & 0xFF) * bloomScalePercent / 100;
+				uint32_t b = ((fixA >> 16) & 0xFF) * bloomScalePercent / 100;
 				fixA = (b << 16) | (g << 8) | r;
 			}
 			if (blendFuncB == GE_DSTBLEND_FIXB) {
-				uint32_t r = ((fixB >> 0) & 0xFF) * 40 / 100;
-				uint32_t g = ((fixB >> 8) & 0xFF) * 40 / 100;
-				uint32_t b = ((fixB >> 16) & 0xFF) * 40 / 100;
+				uint32_t r = ((fixB >> 0) & 0xFF) * bloomScalePercent / 100;
+				uint32_t g = ((fixB >> 8) & 0xFF) * bloomScalePercent / 100;
+				uint32_t b = ((fixB >> 16) & 0xFF) * bloomScalePercent / 100;
 				fixB = (b << 16) | (g << 8) | r;
 			}
 		}

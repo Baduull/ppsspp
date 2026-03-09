@@ -665,6 +665,14 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 	if (System_GetPropertyBool(SYSPROP_CAN_READ_BATTERY_PERCENTAGE)) {
 		graphicsSettings->Add(new BitCheckBox(&g_Config.iShowStatusFlags, (int)ShowStatusFlags::BATTERY_PERCENT, gr->T("Show Battery %")));
 	}
+
+	graphicsSettings->Add(new ItemHeader(gr->T("Patch")));
+	PopupSliderChoice *ge2BloomReduction = graphicsSettings->Add(new PopupSliderChoice(&g_Config.iGE2BloomReductionPercent, 0, 100, 60, gr->T("God Eater 2 bloom reduction"), screenManager(), "%"));
+	ge2BloomReduction->SetFormat("%d%%");
+	ge2BloomReduction->SetLiveUpdate(true);
+	ge2BloomReduction->SetEnabledFunc([]() {
+		return PSP_CoreParameter().compat.flags().ReduceBloomStrength && !g_Config.bSkipBufferEffects;
+	});
 	AddOverlayList(graphicsSettings, screenManager());
 }
 
