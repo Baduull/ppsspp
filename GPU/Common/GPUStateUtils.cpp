@@ -1228,8 +1228,22 @@ static void ConvertBlendState(GenericBlendState &blendState, FBReadSetting useFB
 	const GEBlendMode blendFuncEq = gstate.getBlendEq();
 	GEBlendSrcFactor blendFuncA = gstate.getBlendFuncA();
 	GEBlendDstFactor blendFuncB = gstate.getBlendFuncB();
-	const u32 fixA = gstate.getFixA();
-	const u32 fixB = gstate.getFixB();
+	u32 fixA = gstate.getFixA();
+	u32 fixB = gstate.getFixB();
+	
+	// Reduce bloom strength by 60% for God Eater 2
+	if (PSP_CoreParameter().compat.flags().ReduceBloomStrength) {
+		// Multiply color components by 0.4 (40% of original, reducing by 60%)
+		uint32_t r = ((fixA >> 0) & 0xFF) * 40 / 100;
+		uint32_t g = ((fixA >> 8) & 0xFF) * 40 / 100;
+		uint32_t b = ((fixA >> 16) & 0xFF) * 40 / 100;
+		fixA = (b << 16) | (g << 8) | r;
+		
+		r = ((fixB >> 0) & 0xFF) * 40 / 100;
+		g = ((fixB >> 8) & 0xFF) * 40 / 100;
+		b = ((fixB >> 16) & 0xFF) * 40 / 100;
+		fixB = (b << 16) | (g << 8) | r;
+	}
 
 	if (blendFuncA > GE_SRCBLEND_FIXA)
 		blendFuncA = GE_SRCBLEND_FIXA;

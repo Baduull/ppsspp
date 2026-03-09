@@ -123,6 +123,7 @@ struct CompatFlags {
 	bool PersistentFramebuffers;
 	bool FileCreatedTimeHack;
 	bool FastEmulatedGPU;
+	bool ReduceBloomStrength;
 };
 
 struct VRCompat {
