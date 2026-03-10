@@ -1254,9 +1254,11 @@ static void ConvertBlendState(GenericBlendState &blendState, FBReadSetting useFB
 			const int r = (fixColor >> 0) & 0xFF;
 			const int g = (fixColor >> 8) & 0xFF;
 			const int b = (fixColor >> 16) & 0xFF;
+			const int maxc = std::max(r, std::max(g, b));
+			const int minc = std::min(r, std::min(g, b));
 			const int avg = (r + g + b) / 3;
-			// Bloom constants are usually bright; we allow tint here since scaling is channel-uniform.
-			return avg >= 120;
+			// Keep this selective: bright and close-to-neutral constants are most commonly light-pass bloom.
+			return avg >= 150 && (maxc - minc) <= 56;
 		};
 
 		// Detect bloom/light-pass blending patterns in non-postprocessing draw calls.
@@ -1270,7 +1272,8 @@ static void ConvertBlendState(GenericBlendState &blendState, FBReadSetting useFB
 		const bool isLikelyAlphaComposite =
 			blendFuncB == GE_DSTBLEND_INVSRCALPHA ||
 			blendFuncB == GE_DSTBLEND_DOUBLEINVSRCALPHA ||
-			gstate.isAlphaTestEnabled();
+			gstate.isAlphaTestEnabled() ||
+			gstate.isColorTestEnabled();
 		
 		// Check for typical bloom blending patterns
 		if (isAdditiveBlend) {
@@ -1284,10 +1287,6 @@ static void ConvertBlendState(GenericBlendState &blendState, FBReadSetting useFB
 				if (isBrightBloomFixColor(fixA)) {
 					isBloomBlendMode = true;
 				}
-			} else if (blendFuncA == GE_SRCBLEND_SRCALPHA && blendFuncB == GE_DSTBLEND_FIXB && !isLikelyAlphaComposite) {
-				if (isBrightBloomFixColor(fixB)) {
-					isBloomBlendMode = true;
-				}
 			} else if (blendFuncA == GE_SRCBLEND_FIXA && blendFuncB == GE_DSTBLEND_FIXB) {
 				if (isBrightBloomFixColor(fixA) || isBrightBloomFixColor(fixB)) {
 					isBloomBlendMode = true;
@@ -1295,10 +1294,8 @@ static void ConvertBlendState(GenericBlendState &blendState, FBReadSetting useFB
 			}
 
 			// Some in-scene light shaders (not post-processing) use bright FIX constants on scene RTs.
-			if (!isBloomBlendMode && isSceneSizedRT && (hasBrightFixA || hasBrightFixB) && !isLikelyAlphaComposite) {
+			if (!isBloomBlendMode && isSceneSizedRT && hasBrightFixA && hasBrightFixB && !isLikelyAlphaComposite) {
 				const bool srcLooksAdditive =
-					blendFuncA == GE_SRCBLEND_SRCALPHA ||
-					blendFuncA == GE_SRCBLEND_DOUBLESRCALPHA ||
 					blendFuncA == GE_SRCBLEND_FIXA ||
 					blendFuncA == GE_SRCBLEND_DSTCOLOR;
 				const bool dstLooksAdditive =
