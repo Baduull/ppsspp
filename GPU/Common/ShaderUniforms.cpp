@@ -121,7 +121,8 @@ void BaseUpdateUniforms(UB_VS_FS_Base *ub, uint64_t dirtyUniforms, bool flipView
 		// 100 = neutral, >100 = zoom in, <100 = zoom out.
 		const bool perspectiveProjection = std::fabs(gstate.projMatrix[15]) < 0.5f;
 		// Keep zoom on likely world geometry and avoid 3D-style overlays (such as target indicators.)
-		const bool likelyWorldGeometry = gstate.isCullEnabled() || gstate.isLightingEnabled();
+		// World geometry typically has fog enabled, while UI overlays don't.
+		const bool likelyWorldGeometry = gstate.isFogEnabled();
 		if (!gstate.isModeThrough() && !gstate.isModeClear() && gstate.isDepthTestEnabled() && gstate.isDepthWriteEnabled() && perspectiveProjection && likelyWorldGeometry) {
 			int cameraZoomFactor = PSP_CoreParameter().compat.flags().CameraZoomFactor;
 			if (cameraZoomFactor > 0) {
