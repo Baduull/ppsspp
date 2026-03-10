@@ -1259,11 +1259,14 @@ static void ConvertBlendState(GenericBlendState &blendState, FBReadSetting useFB
 			return avg >= 120;
 		};
 
-		// Detect bloom-specific blending patterns:
+		// Detect bloom/light-pass blending patterns in non-postprocessing draw calls.
 		// 1. Additive blending (ADD equation)
-		// 2. Common bloom blend modes: ONE+ONE, SRC_ALPHA+ONE, and bright FIX constant blends
+		// 2. Common bloom/light blend modes: ONE+ONE, SRC_ALPHA+ONE, and bright FIX constant blends
 		bool isAdditiveBlend = (blendFuncEq == GE_BLENDMODE_MUL_AND_ADD);
 		bool isBloomBlendMode = false;
+		const bool hasBrightFixA = blendFuncA == GE_SRCBLEND_FIXA && isBrightBloomFixColor(fixA);
+		const bool hasBrightFixB = blendFuncB == GE_DSTBLEND_FIXB && isBrightBloomFixColor(fixB);
+		const bool isSceneSizedRT = gstate_c.curRTWidth >= 320 && gstate_c.curRTHeight >= 180;
 		
 		// Check for typical bloom blending patterns
 		if (isAdditiveBlend) {
@@ -1283,6 +1286,25 @@ static void ConvertBlendState(GenericBlendState &blendState, FBReadSetting useFB
 				}
 			} else if (blendFuncA == GE_SRCBLEND_FIXA && blendFuncB == GE_DSTBLEND_FIXB) {
 				if (isBrightBloomFixColor(fixA) || isBrightBloomFixColor(fixB)) {
+					isBloomBlendMode = true;
+				}
+			}
+
+			// Some in-scene light shaders (not post-processing) use bright FIX constants on scene RTs.
+			if (!isBloomBlendMode && isSceneSizedRT && (hasBrightFixA || hasBrightFixB)) {
+				const bool srcLooksAdditive =
+					blendFuncA == GE_SRCBLEND_SRCALPHA ||
+					blendFuncA == GE_SRCBLEND_DOUBLESRCALPHA ||
+					blendFuncA == GE_SRCBLEND_FIXA ||
+					blendFuncA == GE_SRCBLEND_DSTCOLOR;
+				const bool dstLooksAdditive =
+					blendFuncB == GE_DSTBLEND_SRCCOLOR ||
+					blendFuncB == GE_DSTBLEND_INVSRCCOLOR ||
+					blendFuncB == GE_DSTBLEND_INVSRCALPHA ||
+					blendFuncB == GE_DSTBLEND_DOUBLEINVSRCALPHA ||
+					blendFuncB == GE_DSTBLEND_FIXB;
+
+				if (srcLooksAdditive && dstLooksAdditive) {
 					isBloomBlendMode = true;
 				}
 			}
