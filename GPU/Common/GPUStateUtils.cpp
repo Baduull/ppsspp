@@ -1231,40 +1231,39 @@ static void ConvertBlendState(GenericBlendState &blendState, FBReadSetting useFB
 	u32 fixA = gstate.getFixA();
 	u32 fixB = gstate.getFixB();
 	
-	// Reduce bloom strength by 60% for God Eater 2
-	// Only target additive blending operations commonly used for bloom compositing
+	// Reduce bloom strength for God Eater 2.
+	// Keep this conservative to avoid tinting/color bias in non-bloom passes.
 	if (PSP_CoreParameter().compat.flags().ReduceBloomStrength) {
 		const int bloomReduction = std::clamp(g_Config.iGE2BloomReductionPercent, 0, 100);
-		const int bloomScalePercent = 100 - bloomReduction;
-		auto scaleBloomFixPreserveSaturation = [bloomScalePercent](u32 fixColor) {
+		// Make reduction less aggressive so bloom remains visible at default settings.
+		const int effectiveReduction = bloomReduction * 65 / 100;
+		const int bloomScalePercent = 100 - effectiveReduction;
+		auto scaleBloomFixNeutral = [bloomScalePercent](u32 fixColor) {
 			u32 r = (fixColor >> 0) & 0xFF;
 			u32 g = (fixColor >> 8) & 0xFF;
 			u32 b = (fixColor >> 16) & 0xFF;
 
-			u32 maxc = std::max(r, std::max(g, b));
-			u32 minc = std::min(r, std::min(g, b));
-
-			// Preserve more colorful bloom while still reducing washed-out white bloom.
-			// 0% chroma keeps full reduction, high chroma restores up to 60% of reduced amount.
-			int preservePercent = 0;
-			if (maxc > 0) {
-				preservePercent = (int)((maxc - minc) * 60 / maxc);
-			}
-
-			const int reducedPart = 100 - bloomScalePercent;
-			const int effectiveScalePercent = bloomScalePercent + reducedPart * preservePercent / 100;
-
-			r = r * effectiveScalePercent / 100;
-			g = g * effectiveScalePercent / 100;
-			b = b * effectiveScalePercent / 100;
+			r = r * bloomScalePercent / 100;
+			g = g * bloomScalePercent / 100;
+			b = b * bloomScalePercent / 100;
 
 			return (b << 16) | (g << 8) | r;
 		};
 
+		auto isNeutralBloomFixColor = [](u32 fixColor) {
+			const int r = (fixColor >> 0) & 0xFF;
+			const int g = (fixColor >> 8) & 0xFF;
+			const int b = (fixColor >> 16) & 0xFF;
+			const int maxc = std::max(r, std::max(g, b));
+			const int minc = std::min(r, std::min(g, b));
+			const int avg = (r + g + b) / 3;
+			// Typical bloom constants are bright and near-neutral.
+			return avg >= 160 && (maxc - minc) <= 18;
+		};
+
 		// Detect bloom-specific blending patterns:
 		// 1. Additive blending (ADD equation)
-		// 2. Common bloom blend modes: ONE+ONE, SRC_ALPHA+ONE, FIXA with high values
-		// 3. Small render targets (bloom blur passes are typically < 272 height)
+		// 2. Common bloom blend modes: ONE+ONE, SRC_ALPHA+ONE, FIX constants with bright neutral values
 		bool isAdditiveBlend = (blendFuncEq == GE_BLENDMODE_MUL_AND_ADD);
 		bool isBloomBlendMode = false;
 		
@@ -1275,32 +1274,22 @@ static void ConvertBlendState(GenericBlendState &blendState, FBReadSetting useFB
 			    (blendFuncB == GE_DSTBLEND_SRCCOLOR || blendFuncB == GE_DSTBLEND_INVSRCCOLOR)) {
 				isBloomBlendMode = true;
 			}
-			// FIXA with bright colors (additive bloom composite)
+			// FIX constants with bright near-neutral colors (additive bloom composite)
 			else if (blendFuncA == GE_SRCBLEND_FIXA && blendFuncB == GE_DSTBLEND_SRCCOLOR) {
-				// Check if fixA is bright (typical for bloom)
-				uint32_t r = (fixA >> 0) & 0xFF;
-				uint32_t g = (fixA >> 8) & 0xFF;
-				uint32_t b = (fixA >> 16) & 0xFF;
-				// If color is bright enough (average > 128), likely bloom
-				if ((r + g + b) / 3 > 128) {
+				if (isNeutralBloomFixColor(fixA)) {
 					isBloomBlendMode = true;
 				}
-			}
-			// Small render target check (bloom blur passes)
-			// God Eater 2 uses smaller buffers for bloom (typically 128x64 or 256x128)
-			else if (gstate_c.curRTHeight <= 144 && gstate_c.curRTWidth <= 256) {
-				isBloomBlendMode = true;
 			}
 		}
 		
 		// Apply bloom reduction only to detected bloom operations
 		if (isBloomBlendMode) {
 			// Scale bloom contribution according to user-configured reduction percent.
-			if (blendFuncA == GE_SRCBLEND_FIXA) {
-				fixA = scaleBloomFixPreserveSaturation(fixA);
+			if (blendFuncA == GE_SRCBLEND_FIXA && isNeutralBloomFixColor(fixA)) {
+				fixA = scaleBloomFixNeutral(fixA);
 			}
-			if (blendFuncB == GE_DSTBLEND_FIXB) {
-				fixB = scaleBloomFixPreserveSaturation(fixB);
+			if (blendFuncB == GE_DSTBLEND_FIXB && isNeutralBloomFixColor(fixB)) {
+				fixB = scaleBloomFixNeutral(fixB);
 			}
 		}
 	}
