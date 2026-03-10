@@ -1267,6 +1267,10 @@ static void ConvertBlendState(GenericBlendState &blendState, FBReadSetting useFB
 		const bool hasBrightFixA = blendFuncA == GE_SRCBLEND_FIXA && isBrightBloomFixColor(fixA);
 		const bool hasBrightFixB = blendFuncB == GE_DSTBLEND_FIXB && isBrightBloomFixColor(fixB);
 		const bool isSceneSizedRT = gstate_c.curRTWidth >= 320 && gstate_c.curRTHeight >= 180;
+		const bool isLikelyAlphaComposite =
+			blendFuncB == GE_DSTBLEND_INVSRCALPHA ||
+			blendFuncB == GE_DSTBLEND_DOUBLEINVSRCALPHA ||
+			gstate.isAlphaTestEnabled();
 		
 		// Check for typical bloom blending patterns
 		if (isAdditiveBlend) {
@@ -1280,7 +1284,7 @@ static void ConvertBlendState(GenericBlendState &blendState, FBReadSetting useFB
 				if (isBrightBloomFixColor(fixA)) {
 					isBloomBlendMode = true;
 				}
-			} else if (blendFuncA == GE_SRCBLEND_SRCALPHA && blendFuncB == GE_DSTBLEND_FIXB) {
+			} else if (blendFuncA == GE_SRCBLEND_SRCALPHA && blendFuncB == GE_DSTBLEND_FIXB && !isLikelyAlphaComposite) {
 				if (isBrightBloomFixColor(fixB)) {
 					isBloomBlendMode = true;
 				}
@@ -1291,7 +1295,7 @@ static void ConvertBlendState(GenericBlendState &blendState, FBReadSetting useFB
 			}
 
 			// Some in-scene light shaders (not post-processing) use bright FIX constants on scene RTs.
-			if (!isBloomBlendMode && isSceneSizedRT && (hasBrightFixA || hasBrightFixB)) {
+			if (!isBloomBlendMode && isSceneSizedRT && (hasBrightFixA || hasBrightFixB) && !isLikelyAlphaComposite) {
 				const bool srcLooksAdditive =
 					blendFuncA == GE_SRCBLEND_SRCALPHA ||
 					blendFuncA == GE_SRCBLEND_DOUBLESRCALPHA ||
@@ -1300,8 +1304,6 @@ static void ConvertBlendState(GenericBlendState &blendState, FBReadSetting useFB
 				const bool dstLooksAdditive =
 					blendFuncB == GE_DSTBLEND_SRCCOLOR ||
 					blendFuncB == GE_DSTBLEND_INVSRCCOLOR ||
-					blendFuncB == GE_DSTBLEND_INVSRCALPHA ||
-					blendFuncB == GE_DSTBLEND_DOUBLEINVSRCALPHA ||
 					blendFuncB == GE_DSTBLEND_FIXB;
 
 				if (srcLooksAdditive && dstLooksAdditive) {
