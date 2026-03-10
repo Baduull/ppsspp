@@ -1236,9 +1236,9 @@ static void ConvertBlendState(GenericBlendState &blendState, FBReadSetting useFB
 	if (PSP_CoreParameter().compat.flags().ReduceBloomStrength) {
 		const int bloomReduction = std::clamp(g_Config.iGE2BloomReductionPercent, 0, 100);
 		// Make reduction less aggressive so bloom remains visible at default settings.
-		const int effectiveReduction = bloomReduction * 65 / 100;
+		const int effectiveReduction = bloomReduction * 40 / 100;
 		const int bloomScalePercent = 100 - effectiveReduction;
-		auto scaleBloomFixNeutral = [bloomScalePercent](u32 fixColor) {
+		auto scaleBloomFixColor = [bloomScalePercent](u32 fixColor) {
 			u32 r = (fixColor >> 0) & 0xFF;
 			u32 g = (fixColor >> 8) & 0xFF;
 			u32 b = (fixColor >> 16) & 0xFF;
@@ -1250,20 +1250,18 @@ static void ConvertBlendState(GenericBlendState &blendState, FBReadSetting useFB
 			return (b << 16) | (g << 8) | r;
 		};
 
-		auto isNeutralBloomFixColor = [](u32 fixColor) {
+		auto isBrightBloomFixColor = [](u32 fixColor) {
 			const int r = (fixColor >> 0) & 0xFF;
 			const int g = (fixColor >> 8) & 0xFF;
 			const int b = (fixColor >> 16) & 0xFF;
-			const int maxc = std::max(r, std::max(g, b));
-			const int minc = std::min(r, std::min(g, b));
 			const int avg = (r + g + b) / 3;
-			// Typical bloom constants are bright and near-neutral.
-			return avg >= 160 && (maxc - minc) <= 18;
+			// Bloom constants are usually bright; we allow tint here since scaling is channel-uniform.
+			return avg >= 120;
 		};
 
 		// Detect bloom-specific blending patterns:
 		// 1. Additive blending (ADD equation)
-		// 2. Common bloom blend modes: ONE+ONE, SRC_ALPHA+ONE, FIX constants with bright neutral values
+		// 2. Common bloom blend modes: ONE+ONE, SRC_ALPHA+ONE, and bright FIX constant blends
 		bool isAdditiveBlend = (blendFuncEq == GE_BLENDMODE_MUL_AND_ADD);
 		bool isBloomBlendMode = false;
 		
@@ -1274,9 +1272,17 @@ static void ConvertBlendState(GenericBlendState &blendState, FBReadSetting useFB
 			    (blendFuncB == GE_DSTBLEND_SRCCOLOR || blendFuncB == GE_DSTBLEND_INVSRCCOLOR)) {
 				isBloomBlendMode = true;
 			}
-			// FIX constants with bright near-neutral colors (additive bloom composite)
+			// FIX constant blends are common in GE2 bloom/light composite passes.
 			else if (blendFuncA == GE_SRCBLEND_FIXA && blendFuncB == GE_DSTBLEND_SRCCOLOR) {
-				if (isNeutralBloomFixColor(fixA)) {
+				if (isBrightBloomFixColor(fixA)) {
+					isBloomBlendMode = true;
+				}
+			} else if (blendFuncA == GE_SRCBLEND_SRCALPHA && blendFuncB == GE_DSTBLEND_FIXB) {
+				if (isBrightBloomFixColor(fixB)) {
+					isBloomBlendMode = true;
+				}
+			} else if (blendFuncA == GE_SRCBLEND_FIXA && blendFuncB == GE_DSTBLEND_FIXB) {
+				if (isBrightBloomFixColor(fixA) || isBrightBloomFixColor(fixB)) {
 					isBloomBlendMode = true;
 				}
 			}
@@ -1285,11 +1291,11 @@ static void ConvertBlendState(GenericBlendState &blendState, FBReadSetting useFB
 		// Apply bloom reduction only to detected bloom operations
 		if (isBloomBlendMode) {
 			// Scale bloom contribution according to user-configured reduction percent.
-			if (blendFuncA == GE_SRCBLEND_FIXA && isNeutralBloomFixColor(fixA)) {
-				fixA = scaleBloomFixNeutral(fixA);
+			if (blendFuncA == GE_SRCBLEND_FIXA && isBrightBloomFixColor(fixA)) {
+				fixA = scaleBloomFixColor(fixA);
 			}
-			if (blendFuncB == GE_DSTBLEND_FIXB && isNeutralBloomFixColor(fixB)) {
-				fixB = scaleBloomFixNeutral(fixB);
+			if (blendFuncB == GE_DSTBLEND_FIXB && isBrightBloomFixColor(fixB)) {
+				fixB = scaleBloomFixColor(fixB);
 			}
 		}
 	}
