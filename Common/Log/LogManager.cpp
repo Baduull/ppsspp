@@ -96,6 +96,8 @@ static const char * const g_logTypeNames[] = {
 	"GEDEBUGGER",
 	"UI",
 	"IAP",
+	"CWCHEATS",
+	"NET",
 	"SCEAUDIO",
 	"SCECTRL",
 	"SCEDISP",
@@ -199,13 +201,14 @@ void LogManager::SetFileLogPath(const Path &filename) {
 		fclose(fp_);
 	}
 
-	if (!filename.empty() && (outputs_ & LogOutput::File)) {
-		logFilename_ = Path(filename);
+	logFilename_ = Path(filename);
+
+	if (outputs_ & LogOutput::File) {
 		File::CreateFullPath(logFilename_.NavigateUp());
 		fp_ = File::OpenCFile(logFilename_, "at");
 		logFileOpenFailed_ = fp_ == nullptr;
 		if (logFileOpenFailed_) {
-			printf("Failed to open log file %s\n", filename.c_str());
+			printf("Failed to open log file %s\n", logFilename_.c_str());
 		}
 	}
 }
@@ -353,6 +356,7 @@ void LogManager::LogLine(LogLevel level, Log type, const char *file, int line, c
 }
 
 void RingbufferLog::Log(const LogMessage &message) {
+	std::lock_guard<std::mutex> lock(ringLock_);
 	messages_[curMessage_] = message;
 	curMessage_++;
 	if (curMessage_ >= MAX_LOGS)

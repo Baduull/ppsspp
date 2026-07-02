@@ -80,7 +80,7 @@ if(CMAKE_SYSTEM_PROCESSOR)
 endif()
 
 # the libraries in the ffmpeg/ directory are not compatible with mingw
-if(MINGW AND NOT USE_SYSTEM_FFMPEG)
+if(MINGW AND NOT USE_SYSTEM_FFMPEG AND NOT BUILD_BUNDLED_FFMPEG)
 	set(USE_SYSTEM_FFMPEG ON)
 endif()
 
@@ -109,12 +109,6 @@ if(ANDROID OR WIN32 OR (UNIX AND NOT ARM_NO_VULKAN))
 	set(VULKAN ON)
 endif()
 
-# Default to bundled SDL2 on macOS, system SDL2 elsewhere.
-if(APPLE AND NOT IOS)
-	set(DEFAULT_USE_SYSTEM_LIBSDL2 OFF)
-else()
-	set(DEFAULT_USE_SYSTEM_LIBSDL2 ON)
-endif()
 
 if(CMAKE_CXX_COMPILER MATCHES "webos" OR
    CMAKE_CXX_COMPILER MATCHES "starfish")
@@ -202,9 +196,13 @@ option(USE_DISCORD "Build with Discord support" ON)
 option(USE_MINIUPNPC "Build with miniUPnPc support" ON)
 option(USE_SYSTEM_SNAPPY "Dynamically link against system snappy" ${USE_SYSTEM_SNAPPY})
 option(USE_SYSTEM_FFMPEG "Dynamically link against system FFMPEG" ${USE_SYSTEM_FFMPEG})
+option(BUILD_BUNDLED_FFMPEG "Build bundled ffmpeg module" ${BUILD_BUNDLED_FFMPEG})
+option(USE_SYSTEM_FREETYPE "Dynamically link against system freetype" ${USE_SYSTEM_FREETYPE})
+option(USE_SYSTEM_LIBCHDR "Dynamically link against system libchdr" ${USE_SYSTEM_LIBCHDR})
 option(USE_SYSTEM_LIBZIP "Dynamically link against system libzip" ${USE_SYSTEM_LIBZIP})
-option(USE_SYSTEM_LIBSDL2 "Dynamically link against system SDL2" ${DEFAULT_USE_SYSTEM_LIBSDL2})
+
 option(USE_SYSTEM_LIBPNG "Dynamically link against system libpng" ON)
+option(USE_SYSTEM_RAPIDJSON "Build using system rapidjson" ${USE_SYSTEM_RAPIDJSON})
 option(USE_SYSTEM_ZSTD "Dynamically link against system zstd" ${USE_SYSTEM_ZSTD})
 option(USE_SYSTEM_MINIUPNPC "Dynamically link against system miniUPnPc" ${USE_SYSTEM_MINIUPNPC})
 option(USE_ASAN "Use address sanitizer" OFF)
@@ -218,11 +216,17 @@ if(USE_CCACHE)
 	include(ccache)
 endif()
 
+if(USE_SYSTEM_RAPIDJSON)
+	add_compile_definitions(SYSTEM_RAPIDJSON)
+endif()
+
 if(WEBOS)
-	set(ARMV7 ON)
 	set(USING_X11_VULKAN OFF)
 	set(USING_GLES2 ON)
 	set(USE_SYSTEM_ZSTD OFF)
+	if(CMAKE_CXX_COMPILER MATCHES "arm")
+        set(ARMV7 ON)
+	endif()
 endif()
 
 if(UNIX AND NOT (APPLE OR ANDROID) AND VULKAN)
@@ -315,30 +319,41 @@ if(USING_EGL)
 	list(APPEND OPENGL_LIBRARIES ${EGL_LIBRARIES})
 endif()
 
-if(NOT LIBRETRO AND NOT IOS AND NOT MACOSX)
-	find_package(SDL2)
-	find_package(SDL2_ttf)
-	find_package(Fontconfig)
+set(SDL_LIB_TARGET "")
+set(SDL_TTF_LIB_TARGET "")
+set(FONTCONFIG_LIB_TARGET "")
 
-	# TODO: this can be removed once CI supports newer SDL2_ttf
-	if (NOT SDL2_ttf_FOUND)
-		find_package(PkgConfig)
-		if(PkgConfig_FOUND)
-			pkg_check_modules(SDL2_ttf_PKGCONFIG IMPORTED_TARGET SDL2_ttf)
+if(NOT LIBRETRO AND NOT IOS AND NOT LOONGARCH64_DEVICE AND NOT ANDROID)
+	find_package(SDL3 QUIET)
+	if(NOT SDL3_FOUND)
+		if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND (EXISTS "/usr/bin/apt" OR EXISTS "/usr/bin/apt-get" OR EXISTS "/etc/debian_version"))
+			message(FATAL_ERROR "SDL3 not found. Install dependencies with: sudo apt install libsdl3-dev libsdl3-ttf-dev")
+		else()
+			message(FATAL_ERROR "SDL3 not found. Install SDL3 development packages for your distribution and retry.")
 		endif()
 	endif()
-endif()
-
-if(MACOSX AND NOT IOS)
-	if(USE_SYSTEM_LIBSDL2)
-		find_package(SDL2)
-		find_package(SDL2_ttf)
+	set(SDL_LIB_TARGET SDL3::SDL3)
+	find_package(SDL3_ttf QUIET)
+	if(NOT SDL3_ttf_FOUND)
+		if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND (EXISTS "/usr/bin/apt" OR EXISTS "/usr/bin/apt-get" OR EXISTS "/etc/debian_version"))
+			message(FATAL_ERROR "SDL3_ttf not found. Install dependencies with: sudo apt install libsdl3-ttf-dev")
+		else()
+			message(FATAL_ERROR "SDL3_ttf not found. Install SDL3_ttf development packages for your distribution and retry.")
+		endif()
+	endif()
+	set(SDL_TTF_LIB_TARGET SDL3_ttf::SDL3_ttf)
+	message(STATUS "Using SDL3 and SDL3_ttf")
+	add_compile_definitions(USE_SDL3_TTF)
+	find_package(Fontconfig QUIET)
+	if(Fontconfig_FOUND)
+		set(FONTCONFIG_LIB_TARGET Fontconfig::Fontconfig)
+		add_compile_definitions(USE_SDL3_TTF_FONTCONFIG)
+		message(STATUS "Using Fontconfig for SDL3_ttf fallback fonts")
 	else()
-		find_library(SDL2Fwk SDL2 REQUIRED PATHS SDL/macOS)
-		message(STATUS "found SDL2Fwk=${SDL2Fwk}")
-		add_compile_definitions(HAVE_SYSCTLBYNAME)
+		message(WARNING "Fontconfig not found - SDL3_ttf fallback fonts for missing glyphs will be limited")
 	endif()
 endif()
+
 
 include(FindThreads)
 
@@ -471,12 +486,12 @@ if(NOT MSVC)
 
 	add_compile_options(-fno-math-errno)
 
-	if(X86 OR X86_64)
-		# enable sse2 code generation
+	if(X86)
+		# enable sse2 code generation (enabled by default on X86_64)
 		if(NOT MACOSX)
 			add_compile_options(-msse2)
 		endif()
-		if(NOT X86_64 AND NOT CLANG)
+		if(NOT CLANG)
 			add_compile_options(-mfpmath=sse)
 			# add_compile_options(-mstackrealign)
 		endif()
@@ -708,6 +723,7 @@ add_library(Common STATIC
 	Common/Data/Text/I18n.h
 	Common/Data/Text/Parsers.cpp
 	Common/Data/Text/Parsers.h
+	Common/Data/Text/StringWriter.h
 	Common/Data/Text/WrapText.cpp
 	Common/Data/Text/WrapText.h
 	Common/Data/Random/Rng.h
@@ -715,6 +731,8 @@ add_library(Common STATIC
 	Common/File/VFS/VFS.cpp
 	Common/File/VFS/ZipFileReader.cpp
 	Common/File/VFS/ZipFileReader.h
+	Common/File/VFS/SevenZipFileReader.cpp
+	Common/File/VFS/SevenZipFileReader.h
 	Common/File/VFS/DirectoryReader.cpp
 	Common/File/VFS/DirectoryReader.h
 	Common/File/AndroidStorage.h
@@ -764,6 +782,8 @@ add_library(Common STATIC
 	Common/GPU/OpenGL/GLRenderManager.h
 	Common/GPU/OpenGL/GLQueueRunner.cpp
 	Common/GPU/OpenGL/GLQueueRunner.h
+	Common/GPU/OpenGL/GLProfiler.cpp
+	Common/GPU/OpenGL/GLProfiler.h
 	Common/GPU/OpenGL/DataFormatGL.cpp
 	Common/GPU/OpenGL/DataFormatGL.h
 	Common/GPU/Vulkan/VulkanBarrier.cpp
@@ -951,6 +971,10 @@ endif()
 
 target_link_libraries(Common Ext::Snappy cpu_features)
 
+if(SDL_LIB_TARGET AND TARGET SDL3::Headers)
+	target_link_libraries(Common SDL3::Headers)
+endif()
+
 if(NOT LIBRETRO)
     target_link_libraries(Common imgui)
 endif()
@@ -960,6 +984,8 @@ if(ARM64)
 		target_link_libraries(Common adrenotools)
 	endif()
 endif()
+
+target_compile_definitions(Common PRIVATE Z7_CRC_NUM_TABLES=1)
 
 if(TARGET Ext::GLEW)
 	target_link_libraries(Common Ext::GLEW)
@@ -980,81 +1006,86 @@ add_library(vma STATIC
 )
 
 if(USE_FFMPEG)
-	if(NOT FFMPEG_DIR)
-		if(NOT USE_SYSTEM_FFMPEG)
-			if(ANDROID)
-				if(ARMV7)
-					set(PLATFORM_ARCH "android/armv7")
-				elseif(ARM64)
-					set(PLATFORM_ARCH "android/arm64")
-				elseif(X86_64)
-					set(PLATFORM_ARCH "android/x86_64")
-				elseif(X86)
-					set(PLATFORM_ARCH "android/x86")
+	if(NOT BUILD_BUNDLED_FFMPEG)
+		if(NOT FFMPEG_DIR)
+			if(NOT USE_SYSTEM_FFMPEG)
+				if(ANDROID)
+					if(ARMV7)
+						set(PLATFORM_ARCH "android/armv7")
+					elseif(ARM64)
+						set(PLATFORM_ARCH "android/arm64")
+					elseif(X86_64)
+						set(PLATFORM_ARCH "android/x86_64")
+					elseif(X86)
+						set(PLATFORM_ARCH "android/x86")
+					endif()
+				elseif(IOS)
+					if(IOS_PLATFORM STREQUAL "TVOS")
+						set(PLATFORM_ARCH "tvos/arm64")
+					else()
+						set(PLATFORM_ARCH "ios/universal")
+					endif()
+				elseif(MACOSX)
+					set(PLATFORM_ARCH "macosx/universal")
+				elseif(LINUX)
+					if(ARMV7)
+						set(PLATFORM_ARCH "linux/armv7")
+					elseif(ARM64)
+						set(PLATFORM_ARCH "linux/aarch64")
+					elseif(ARM)
+						set(PLATFORM_ARCH "linux/arm")
+					elseif(MIPS)
+						set(PLATFORM_ARCH "linux/mips32")
+					elseif(RISCV64)
+						set(PLATFORM_ARCH "linux/riscv64")
+					elseif(LOONGARCH64)
+						set(PLATFORM_ARCH "linux/loongarch64")
+					elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
+						set(PLATFORM_ARCH "linux/x86_64")
+					elseif(X86)
+						set(PLATFORM_ARCH "linux/x86")
+					endif()
+				elseif(WIN32)
+					if(X86_64)
+						set(PLATFORM_ARCH "Windows/x86_64")
+					elseif(X86)
+						set(PLATFORM_ARCH "Windows/x86")
+					endif()
 				endif()
-			elseif(IOS)
-				if(IOS_PLATFORM STREQUAL "TVOS")
-					set(PLATFORM_ARCH "tvos/arm64")
+				if(WEBOS AND ARMV7)
+					set(PLATFORM_ARCH "linux/webos")
+				endif()
+				if(PLATFORM_ARCH)
+					set(FFMPEG_DIR "ffmpeg/${PLATFORM_ARCH}")
 				else()
-					set(PLATFORM_ARCH "ios/universal")
+					message("Couldn't find an internal FFmpeg build, using system FFmpeg instead")
 				endif()
-			elseif(MACOSX)
-				set(PLATFORM_ARCH "macosx/universal")
-			elseif(LINUX)
-				if(ARMV7)
-					set(PLATFORM_ARCH "linux/armv7")
-				elseif(ARM64)
-					set(PLATFORM_ARCH "linux/aarch64")
-				elseif(ARM)
-					set(PLATFORM_ARCH "linux/arm")
-				elseif(MIPS)
-					set(PLATFORM_ARCH "linux/mips32")
-				elseif(RISCV64)
-					set(PLATFORM_ARCH "linux/riscv64")
-				elseif(LOONGARCH64)
-					set(PLATFORM_ARCH "linux/loongarch64")
-				elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
-					set(PLATFORM_ARCH "linux/x86_64")
-				elseif(X86)
-					set(PLATFORM_ARCH "linux/x86")
-				endif()
-			elseif(WIN32)
-				if(X86_64)
-					set(PLATFORM_ARCH "Windows/x86_64")
-				elseif(X86)
-					set(PLATFORM_ARCH "Windows/x86")
-				endif()
-			endif()
-			if(WEBOS)
-				set(PLATFORM_ARCH "linux/webos")
-			endif()
-			if(PLATFORM_ARCH)
-				set(FFMPEG_DIR "ffmpeg/${PLATFORM_ARCH}")
-			else()
-				message("Couldn't find an internal FFmpeg build, using system FFmpeg instead")
 			endif()
 		endif()
+	
+		find_package(FFmpeg REQUIRED avcodec avformat avutil swresample swscale)
+		# Check if we need to use avcodec_(alloc|free)_frame instead of av_frame_(alloc|free)
+		# Check if we need to use const AVCodec
+		set(CMAKE_REQUIRED_INCLUDES ${FFmpeg_INCLUDE_avcodec};${FFmpeg_INCLUDE_avformat})
+		set(CMAKE_REQUIRED_LIBRARIES FFmpeg::avcodec;FFmpeg::avformat)
+		set(CMAKE_REQUIRED_FLAGS "-pedantic -Wall -Werror -Wno-unused-variable")
+		check_cxx_source_compiles("extern \"C\" {
+			#include <libavcodec/avcodec.h>
+			#include <libavformat/avformat.h>
+			}
+			static AVCodecContext *s_codec_context = NULL;
+			int main() {
+				const AVCodec *codec = avcodec_find_encoder(s_codec_context->codec_id);
+				return 0;
+			}
+			" HAVE_LIBAVCODEC_CONST_AVCODEC FAIL_REGEX "invalid conversion")
+	
+		# Check if we need to use avcodec_alloc_context3 instead of stream->codec
+		# Check if we need to use av_frame_get_buffer instead of avcodec_default_get_buffer
 	endif()
-
-	find_package(FFmpeg REQUIRED avcodec avformat avutil swresample swscale)
-	# Check if we need to use avcodec_(alloc|free)_frame instead of av_frame_(alloc|free)
-	# Check if we need to use const AVCodec
-	set(CMAKE_REQUIRED_INCLUDES ${FFmpeg_INCLUDE_avcodec};${FFmpeg_INCLUDE_avformat})
-	set(CMAKE_REQUIRED_LIBRARIES FFmpeg::avcodec;FFmpeg::avformat)
-	set(CMAKE_REQUIRED_FLAGS "-pedantic -Wall -Werror -Wno-unused-variable")
-	check_cxx_source_compiles("extern \"C\" {
-		#include <libavcodec/avcodec.h>
-		#include <libavformat/avformat.h>
-		}
-		static AVCodecContext *s_codec_context = NULL;
-		int main() {
-			const AVCodec *codec = avcodec_find_encoder(s_codec_context->codec_id);
-			return 0;
-		}
-		" HAVE_LIBAVCODEC_CONST_AVCODEC FAIL_REGEX "invalid conversion")
-
-	# Check if we need to use avcodec_alloc_context3 instead of stream->codec
-	# Check if we need to use av_frame_get_buffer instead of avcodec_default_get_buffer
+	if(BUILD_BUNDLED_FFMPEG)
+		set(CMAKE_REQUIRED_FLAGS "-pedantic -Wall -Werror -Wno-unused-variable")
+	endif()
 endif(USE_FFMPEG)
 
 find_package(ZLIB)
@@ -1253,6 +1284,26 @@ else()
 	set(LIBZIP_LIBRARY libzip)
 endif()
 
+add_library(7zip STATIC
+	ext/lzma-sdk/7zArcIn.c
+	ext/lzma-sdk/7zBuf.c
+	ext/lzma-sdk/7zCrc.c
+	ext/lzma-sdk/7zCrcOpt.c
+	ext/lzma-sdk/7zDec.c
+	ext/lzma-sdk/7zFile.c
+	ext/lzma-sdk/7zStream.c
+	ext/lzma-sdk/Bcj2.c
+	ext/lzma-sdk/Bra.c
+	ext/lzma-sdk/Bra86.c
+	ext/lzma-sdk/CpuArch.c
+	ext/lzma-sdk/Delta.c
+	ext/lzma-sdk/Lzma2Dec.c
+	ext/lzma-sdk/LzmaDec.c
+)
+target_link_libraries(7zip)
+include_directories(ext/lzma-sdk)
+set(LIB7ZIP_LIBRARY 7zip)
+
 # Arm platforms require at least libpng17.
 if(ANDROID OR ARMV7 OR ARM64 OR ARM OR IOS)
 	set(PNG_REQUIRED_VERSION 1.7)
@@ -1329,6 +1380,11 @@ add_library(basis_universal STATIC
 )
 set(BASISU_LIBRARIES basis_universal)
 
+add_library(pugixml STATIC
+	ext/pugixml/pugixml.cpp
+	ext/pugixml/pugixml.hpp
+)
+
 set(nativeExtra)
 set(nativeExtraLibs)
 
@@ -1386,14 +1442,15 @@ elseif(IOS AND NOT LIBRETRO)
 		ios/iCade/iCadeReaderView.h
 		ios/iCade/iCadeReaderView.m
 		ios/iCade/iCadeState.h
-		UI/DarwinFileSystemServices.mm
-		UI/DarwinFileSystemServices.h
 		Common/Battery/AppleBatteryClient.m
 	)
 
-	list(APPEND nativeExtraLibs "-framework Foundation -framework MediaPlayer -framework AudioToolbox -framework CoreGraphics -framework CoreMotion -framework QuartzCore -framework UIKit -framework GLKit -framework OpenAL -framework AVFoundation -framework CoreLocation -framework CoreText -framework CoreVideo -framework CoreMedia -framework CoreServices -framework Metal -framework IOSurface" )
+	list(APPEND nativeExtraLibs "-framework Foundation -framework MediaPlayer -framework AudioToolbox -framework CoreGraphics -framework CoreMotion -framework QuartzCore -framework UIKit -framework GLKit -framework OpenAL -framework AVFoundation -framework CoreLocation -framework CoreText -framework CoreVideo -framework CoreMedia -framework CoreServices -framework Metal -framework IOSurface -framework Photos" )
 	if(EXISTS "${CMAKE_IOS_SDK_ROOT}/System/Library/Frameworks/GameController.framework")
 		list(APPEND nativeExtraLibs "-weak_framework GameController")
+	endif()
+	if(EXISTS "${CMAKE_IOS_SDK_ROOT}/System/Library/Frameworks/PhotosUI.framework")
+		list(APPEND nativeExtraLibs "-weak_framework PhotosUI")
 	endif()
 
 	if(NOT ICONV_LIBRARY)
@@ -1412,7 +1469,7 @@ elseif(IOS AND NOT LIBRETRO)
 		ios/AudioEngine.mm
 		ios/LocationHelper.mm
 		ios/Controls.mm
-		UI/DarwinFileSystemServices.mm
+		Core/Util/DarwinFileSystemServices.mm
 		Common/Battery/AppleBatteryClient.m
 		Common/Render/Text/draw_text_cocoa.mm
 		PROPERTIES COMPILE_FLAGS -fobjc-arc)
@@ -1435,11 +1492,8 @@ elseif(USING_QT_UI)
 	endif()
 	if(APPLE)
 		list(APPEND NativeAppSource
-			UI/DarwinFileSystemServices.mm
-			UI/DarwinFileSystemServices.h
 			Common/Battery/AppleBatteryClient.m)
 		set_source_files_properties(Common/Battery/AppleBatteryClient.m
-			UI/DarwinFileSystemServices.mm
 			Common/Render/Text/draw_text_cocoa.mm
 			PROPERTIES COMPILE_FLAGS -fobjc-arc)
 		list(APPEND nativeExtraLibs ${COCOA_LIBRARY} ${QUARTZ_CORE_LIBRARY} ${IOKIT_LIBRARY})
@@ -1450,19 +1504,22 @@ elseif(USING_QT_UI)
 	set(TargetBin PPSSPPQt)
 
 	# Enable SDL joystick if SDL is found
-	if(SDL2_FOUND)
+	if(SDL_LIB_TARGET)
 		add_compile_definitions(SDL)
 		list(APPEND nativeExtra
 			SDL/SDLJoystick.h
 			SDL/SDLJoystick.cpp
 		)
-		list(APPEND nativeExtraLibs SDL2::SDL2)
+		list(APPEND nativeExtraLibs ${SDL_LIB_TARGET})
 	endif()
 
 elseif(WIN32)
 	# Don't care about SDL.
 	set(TargetBin PPSSPPWindows)
 elseif(LIBRETRO)
+elseif(LOONGARCH64_DEVICE)
+	# Cross-compiling for loongarch64 currently only builds PPSSPPHeadless, and there's
+	# no SDL3 available for that target, so skip the desktop SDL frontend entirely.
 else()
 	if(GOLD)
 		set(TargetBin PPSSPPGold)
@@ -1482,43 +1539,26 @@ else()
 			SDL/SDLVulkanGraphicsContext.cpp
 		)
 	endif()
-	if(SDL2_ttf_FOUND OR
-		(SDL2_ttf_PKGCONFIG_FOUND AND
-			SDL2_ttf_PKGCONFIG_VERSION VERSION_GREATER_EQUAL "2.0.18"))
-		add_compile_definitions(USE_SDL2_TTF)
-		if(FONTCONFIG_FOUND)
-			add_compile_definitions(USE_SDL2_TTF_FONTCONFIG)
-			list(APPEND nativeExtraLibs Fontconfig::Fontconfig)
-		endif()
-	elseif(SDL2_ttf_PKGCONFIG_FOUND)
-		message(WARNING "Found SDL2_ttf <2.0.18 - this is too old, falling back to atlas")
+	if(SDL_TTF_LIB_TARGET)
+		list(APPEND nativeExtraLibs ${SDL_TTF_LIB_TARGET})
 	endif()
-	if(SDL2_ttf_FOUND)
-		list(APPEND nativeExtraLibs SDL2_ttf::SDL2_ttf)
-	elseif(SDL2_ttf_PKGCONFIG_FOUND)
-		list(APPEND nativeExtraLibs PkgConfig::SDL2_ttf_PKGCONFIG)
+	if(FONTCONFIG_LIB_TARGET)
+		list(APPEND nativeExtraLibs ${FONTCONFIG_LIB_TARGET})
 	endif()
 	if(APPLE)
 		list(APPEND nativeExtra
-		SDL/SDLMain.h
-		SDL/SDLMain.mm
-		SDL/SDLCocoaMetalLayer.h
-		SDL/SDLCocoaMetalLayer.mm
-		SDL/CocoaBarItems.mm
-		SDL/CocoaBarItems.h
-		SDL/PPSSPPAboutViewController.m
-		SDL/PPSSPPAboutViewController.h
-		SDL/MacCameraHelper.mm
-		UI/DarwinFileSystemServices.mm
-		UI/DarwinFileSystemServices.h
-		Common/Battery/AppleBatteryClient.m
-		UI/PSPNSApplicationDelegate.mm
-		UI/PSPNSApplicationDelegate.h)
+			SDL/SDLCocoaMetalLayer.h
+			SDL/SDLCocoaMetalLayer.mm
+			SDL/CocoaBarItems.mm
+			SDL/CocoaBarItems.h
+			SDL/PPSSPPAboutViewController.m
+			SDL/PPSSPPAboutViewController.h
+			SDL/MacCameraHelper.mm
+			Common/Battery/AppleBatteryClient.m
+			UI/PSPNSApplicationDelegate.mm
+			UI/PSPNSApplicationDelegate.h)
 
-		# TODO
-		# set_source_files_properties(SDL/SDLMain.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
-
-		set_source_files_properties(UI/DarwinFileSystemServices.mm
+		set_source_files_properties(Core/Util/DarwinFileSystemServices.mm
 			UI/PSPNSApplicationDelegate.mm
 			SDL/CocoaMetalLayer.mm
 			SDL/CocoaBarItems.mm
@@ -1528,21 +1568,16 @@ else()
 			Common/Render/Text/draw_text_cocoa.mm
 			PROPERTIES COMPILE_FLAGS -fobjc-arc)
 		list(APPEND nativeExtraLibs ${COCOA_LIBRARY} ${QUARTZ_CORE_LIBRARY} ${IOKIT_LIBRARY} "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo")
-
-		if(USE_SYSTEM_LIBSDL2)
-			list(APPEND nativeExtraLibs SDL2::SDL2)
-		else()
-			list(APPEND nativeExtraLibs ${SDL2Fwk})
-		endif()
+		list(APPEND nativeExtraLibs ${SDL_LIB_TARGET})
 	elseif(USING_EGL)
-		list(APPEND nativeExtraLibs pthread SDL2::SDL2)
+		list(APPEND nativeExtraLibs pthread ${SDL_LIB_TARGET})
 	else()
-		list(APPEND nativeExtraLibs SDL2::SDL2)
+		list(APPEND nativeExtraLibs ${SDL_LIB_TARGET})
 	endif()
 endif()
 
 if(WIN32)
-	target_link_libraries(Common winmm dsound dxguid Version)
+	target_link_libraries(Common winmm dsound dxguid d2d1 dwrite d3d11 Version)
 endif()
 
 if(NOT LIBRETRO)
@@ -1593,6 +1628,8 @@ list(APPEND NativeAppSource
 	UI/IAPScreen.h
 	UI/MainScreen.h
 	UI/MainScreen.cpp
+	UI/GameBrowser.h
+	UI/GameBrowser.cpp
 	UI/MiscScreens.h
 	UI/MiscScreens.cpp
 	UI/MiscViews.h
@@ -1623,6 +1660,8 @@ list(APPEND NativeAppSource
 	UI/GamepadEmu.cpp
 	UI/JoystickHistoryView.h
 	UI/JoystickHistoryView.cpp
+	UI/LoadStateConfirmScreen.h
+	UI/LoadStateConfirmScreen.cpp
 	UI/OnScreenDisplay.h
 	UI/OnScreenDisplay.cpp
 	UI/ControlMappingScreen.h
@@ -1698,7 +1737,8 @@ if(ANDROID OR (LINUX AND ARM_DEVICE) OR (LINUX AND RISCV64) OR (LINUX AND LOONGA
 	set(ATOMIC_LIB atomic)
 endif()
 
-target_link_libraries(native ${LIBZIP_LIBRARY} ${PNG_LIBRARIES} ${BASISU_LIBRARIES} ${ZLIB_LIBRARY} vma gason udis86 ${RT_LIB} ${nativeExtraLibs} ${ATOMIC_LIB} Common)
+target_link_libraries(native ${LIBZIP_LIBRARY} ${LIB7ZIP_LIBRARY} ${PNG_LIBRARIES} ${BASISU_LIBRARIES} ${ZLIB_LIBRARY} pugixml vma gason udis86 ${RT_LIB} ${nativeExtraLibs} ${ATOMIC_LIB} Common)
+
 if(TARGET Ext::GLEW)
 	target_link_libraries(native Ext::GLEW)
 endif()
@@ -1970,8 +2010,6 @@ set(GPU_SOURCES
 	GPU/Common/FragmentShaderGenerator.h
 	GPU/Common/VertexShaderGenerator.cpp
 	GPU/Common/VertexShaderGenerator.h
-	GPU/Common/GeometryShaderGenerator.cpp
-	GPU/Common/GeometryShaderGenerator.h
 	GPU/Common/FramebufferManagerCommon.cpp
 	GPU/Common/FramebufferManagerCommon.h
 	GPU/Common/GPUDebugInterface.cpp
@@ -2000,10 +2038,12 @@ set(GPU_SOURCES
 	GPU/Common/VertexDecoderCommon.h
 	GPU/Common/VertexDecoderHandwritten.cpp
 	GPU/Common/VertexDecoderHandwritten.h
+	GPU/Common/VertexReader.h
 	GPU/Common/TransformCommon.cpp
 	GPU/Common/TransformCommon.h
 	GPU/Common/IndexGenerator.cpp
 	GPU/Common/IndexGenerator.h
+	GPU/Common/ImageCommon.h
 	GPU/Common/TextureDecoder.cpp
 	GPU/Common/TextureDecoder.h
 	GPU/Common/TextureCacheCommon.cpp
@@ -2044,6 +2084,7 @@ set(GPU_SOURCES
 	GPU/GPUCommonHW.h
 	GPU/GPUState.cpp
 	GPU/GPUState.h
+	GPU/GPUStateSIMDUtil.h
 	GPU/Math3D.cpp
 	GPU/Math3D.h
 	GPU/Software/BinManager.cpp
@@ -2084,10 +2125,16 @@ if(WIN32)
 	)
 endif()
 
-if(LINUX OR ANDROID OR MACOSX OR IOS)
+if(LINUX OR ANDROID OR MACOSX OR IOS OR BSD)
 	list(APPEND aemu_postoffice
 		ext/aemu_postoffice/client/sock_impl_linux.c
 	)
+endif()
+
+if((MACOSX OR IOS) AND NOT LIBRETRO)
+	list(APPEND CoreExtra
+		Core/Util/DarwinFileSystemServices.mm
+		Core/Util/DarwinFileSystemServices.h)
 endif()
 
 # 'ppsspp_jni' on ANDROID, 'Core' everywhere else
@@ -2531,6 +2578,11 @@ add_library(${CoreLibName} ${CoreLinkType}
 	${CMAKE_CURRENT_BINARY_DIR}/git-version.cpp
 )
 
+if((MACOSX OR IOS) AND NOT LIBRETRO)
+	set_source_files_properties(Core/Util/DarwinFileSystemServices.mm
+		PROPERTIES COMPILE_FLAGS -fobjc-arc)
+endif()
+
 if(LIBRETRO)
 	target_include_directories(${CoreLibName} PRIVATE libretro/libretro-common/include)
 endif()
@@ -2573,7 +2625,14 @@ else()
 	include_directories(ext/zstd/lib)
 endif()
 
-include_directories(ext/libchdr/include)
+if(USE_SYSTEM_LIBCHDR)
+	find_package(PkgConfig)
+	if(PkgConfig_FOUND)
+		pkg_check_modules(libchdr_PKGCONFIG IMPORTED_TARGET libchdr)
+	endif()
+else()
+	include_directories(ext/libchdr/include)
+endif()
 
 target_link_libraries(${CoreLibName} Common native chdr kirk cityhash sfmt19937 xbrz xxhash rcheevos minimp3 at3_standalone lua ${GlslangLibs}
 	${CoreExtraLibs} ${OPENGL_LIBRARIES} ${X11_LIBRARIES} ${CMAKE_DL_LIBS})
@@ -2602,6 +2661,17 @@ if(FFmpeg_FOUND)
 		FFmpeg::avutil
 		FFmpeg::swresample
 		FFmpeg::swscale
+		${ZLIB_LIBRARY}
+	)
+elseif(BUILD_BUNDLED_FFMPEG)
+	target_compile_definitions(${CoreLibName} PRIVATE USE_FFMPEG=1)
+	set_target_properties(${CoreLibName} PROPERTIES NO_SYSTEM_FROM_IMPORTED true)
+	target_link_libraries(${CoreLibName}
+		avcodec
+		avformat
+		avutil
+		swresample
+		swscale
 		${ZLIB_LIBRARY}
 	)
 endif()
@@ -2849,15 +2919,13 @@ set(NativeAssets
 	assets/Roboto_Condensed-Bold.ttf
 	assets/Roboto_Condensed-Italic.ttf
 	assets/Inconsolata-Regular.ttf
-	assets/7z.png
 	assets/compat.ini
+	assets/adhoc-servers.json
 	assets/infra-dns.json
 	assets/gamecontrollerdb.txt
 	assets/langregion.ini
 	assets/ppge_atlas.zim
 	assets/ppge_atlas.meta
-	assets/rargray.png
-	assets/zip.png
 	assets/sfx_back.wav
 	assets/sfx_confirm.wav
 	assets/sfx_select.wav
@@ -2900,6 +2968,9 @@ if(HEADLESS)
 	endif()
 	add_executable(PPSSPPHeadless ${HeadlessSource})
 	target_link_libraries(PPSSPPHeadless ${COCOA_LIBRARY} ${QUARTZ_CORE_LIBRARY} ${IOKIT_LIBRARY} ${LinkCommon})
+	if(WIN32)
+		target_link_libraries(PPSSPPHeadless d2d1 dwrite d3d11)
+	endif()
 	setup_target_project(PPSSPPHeadless headless)
 endif()
 
@@ -2928,6 +2999,9 @@ if(UNITTEST)
 		)
 	endif()
 	target_link_libraries(PPSSPPUnitTest ${COCOA_LIBRARY} ${QUARTZ_CORE_LIBRARY} ${IOKIT_LIBRARY} ${LinkCommon} Common)
+	if(WIN32)
+		target_link_libraries(PPSSPPUnitTest d2d1 dwrite d3d11)
+	endif()
 	setup_target_project(PPSSPPUnitTest unittest)
 	add_test(arm64_emitter PPSSPPUnitTest Arm64Emitter)
 	add_test(arm_emitter PPSSPPUnitTest ArmEmitter)
@@ -2947,7 +3021,13 @@ if(UNITTEST)
 endif()
 
 if(ATLAS_TOOL)
-	include_directories(ext/freetype/include)
+	if(USE_SYSTEM_FREETYPE)
+		find_package(Freetype REQUIRED)
+		include_directories(${FREETYPE_INCLUDE_DIRS})
+		add_compile_definitions(SYSTEM_FREETYPE)
+	else()
+		include_directories(ext/freetype/include)
+	endif()
 
 	set(AtlasToolSource
 		ext/native/tools/atlastool.cpp
@@ -3013,8 +3093,6 @@ if(TargetBin)
 			file(INSTALL "${CMAKE_SOURCE_DIR}/ext/vulkan/macOS/Frameworks/libMoltenVK.dylib" DESTINATION "${CMAKE_BINARY_DIR}/${TargetBin}.app/Contents/Frameworks/")
 			if(USING_QT_UI)
 				add_custom_command(TARGET ${TargetBin} POST_BUILD COMMAND /bin/bash "${CMAKE_SOURCE_DIR}/Qt/macbundle.sh" "${CMAKE_BINARY_DIR}/PPSSPPQt.app")
-			elseif(NOT USE_SYSTEM_LIBSDL2)
-				add_custom_command(TARGET ${TargetBin} POST_BUILD COMMAND /bin/bash "${CMAKE_SOURCE_DIR}/SDL/macbundle.sh" "${CMAKE_BINARY_DIR}/${TargetBin}.app" "${TargetBin}")
 			endif()
 		endif()
 	elseif(WIN32)

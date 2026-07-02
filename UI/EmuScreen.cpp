@@ -21,6 +21,7 @@
 
 using namespace std::placeholders;
 
+#include "Common/System/NativeApp.h"
 #include "Common/Render/TextureAtlas.h"
 #include "Common/GPU/OpenGL/GLFeatures.h"
 #include "Common/File/FileUtil.h"
@@ -64,6 +65,7 @@ using namespace std::placeholders;
 #include "GPU/GPUCommon.h"
 #include "Core/MIPS/MIPS.h"
 #include "Core/HLE/sceCtrl.h"
+#include "Core/HLE/sceKernelThread.h"
 #include "Core/HLE/sceSas.h"
 #include "Core/HLE/sceNet.h"
 #include "Core/HLE/sceDisplay.h"
@@ -74,12 +76,12 @@ using namespace std::placeholders;
 #include "Core/Screenshot.h"
 #include "UI/ImDebugger/ImDebugger.h"
 #include "Core/HLE/__sceAudio.h"
-// #include "Core/HLE/proAdhoc.h"
 #include "Core/HW/Display.h"
 
 #include "UI/BackgroundAudio.h"
 #include "UI/GamepadEmu.h"
 #include "UI/PauseScreen.h"
+#include "UI/LoadStateConfirmScreen.h"
 #include "UI/MainScreen.h"
 #include "UI/Background.h"
 #include "UI/EmuScreen.h"
@@ -171,7 +173,6 @@ EmuScreen::EmuScreen(const Path &filename)
 	_dbg_assert_(coreState == CORE_POWERDOWN);
 
 	OnDevMenu.Handle(this, &EmuScreen::OnDevTools);
-	OnChatMenu.Handle(this, &EmuScreen::OnChat);
 
 	// Usually, we don't want focus movement enabled on this screen, so disable on start.
 	// Only if you open chat or dev tools do we want it to start working.
@@ -471,6 +472,33 @@ EmuScreen::~EmuScreen() {
 		bootPending_ = false;
 	}
 
+	// Catch-all for shutdown paths that didn't go through REQUEST_GAME_STOP (e.g. user navigated
+	// away with the back button, opened a different game, etc.). If an exit callback is registered
+	// and the core is still running, drive the CPU synchronously here so the callback gets a chance
+	// to run - there are no more host frames after this point. Capped tightly so a misbehaving
+	// callback can't stall shutdown.
+	if (!bootPending_ && PSP_IsInited() && coreState != CORE_POWERDOWN) {
+		const bool inflight = __KernelIsExitCallbackPending();
+		if (inflight || __KernelInvokeRegisteredExitCallback()) {
+			INFO_LOG(Log::Loader, "EmuScreen dtor: %s exit callback synchronously before shutdown",
+				inflight ? "finishing in-flight" : "running");
+			if (coreState == CORE_NEXTFRAME)
+				coreState = CORE_RUNNING_CPU;
+			const s64 chunkCycles = usToCycles(100000);  // ~100ms of emulated time per chunk
+			const int maxChunks = 20;                    // hard cap: ~2s of emulated time total
+			for (int i = 0; i < maxChunks && __KernelIsExitCallbackPending(); i++) {
+				if (coreState != CORE_RUNNING_CPU && coreState != CORE_NEXTFRAME)
+					break;
+				PSP_RunLoopFor((int)chunkCycles);
+				if (coreState == CORE_NEXTFRAME)
+					coreState = CORE_RUNNING_CPU;
+			}
+			if (__KernelIsExitCallbackPending()) {
+				WARN_LOG(Log::Loader, "Exit callback didn't return in time; powering down anyway.");
+			}
+		}
+	}
+
 	Achievements::UnloadGame();
 	PSP_Shutdown(true);
 
@@ -503,6 +531,9 @@ EmuScreen::~EmuScreen() {
 		g_Discord.ClearPresence();
 	else
 		g_Discord.SetPresenceMenu();
+
+	// This makes sure that the recents list is updated, among other things.
+	g_Config.Save("exitGame");
 }
 
 void EmuScreen::dialogFinished(const Screen *dialog, DialogResult result) {
@@ -529,12 +560,6 @@ void EmuScreen::dialogFinished(const Screen *dialog, DialogResult result) {
 
 	// Make sure we re-enable keyboard mode if it was disabled by the dialog, and if needed.
 	lastImguiEnabled_ = false;
-}
-
-static void AfterSaveStateAction(SaveState::Status status, std::string_view message) {
-	if (!message.empty() && (!g_Config.bDumpFrames || !g_Config.bDumpVideoOutput)) {
-		g_OSD.Show(status == SaveState::Status::SUCCESS ? OSDType::MESSAGE_SUCCESS : OSDType::MESSAGE_ERROR, message, status == SaveState::Status::SUCCESS ? 2.0 : 5.0);
-	}
 }
 
 void EmuScreen::focusChanged(ScreenFocusChange focusChange) {
@@ -566,8 +591,17 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
 			WARN_LOG(Log::Loader, "Can't stop during a pending boot");
 			return;
 		}
-		// The destructor will take care of shutting down.
-		screenManager()->switchScreen(new MainScreen());
+		// Give the game a chance to run its registered exit callback before tearing things down.
+		// If the dispatch took, we keep running emulation; ActionAfterExitCallback (or a direct
+		// sceKernelExitGame from inside the callback) flips coreState to CORE_POWERDOWN, and
+		// checkPowerDown() then switches us to MainScreen as usual. Pressing stop again while
+		// the callback is in flight, or stopping a non-running core, falls through to immediate shutdown.
+		if (coreState == CORE_RUNNING_CPU && !__KernelIsExitCallbackPending() && __KernelInvokeRegisteredExitCallback()) {
+			INFO_LOG(Log::Loader, "REQUEST_GAME_STOP: running exit callback before shutdown.");
+		} else {
+			// No callback (or already in flight, or core not running) - the destructor will take care of shutting down.
+			screenManager()->switchScreen(new MainScreen());
+		}
 	} else if (message == UIMessage::REQUEST_GAME_RESET) {
 		if (bootPending_) {
 			WARN_LOG(Log::Loader, "Can't reset during a pending boot");
@@ -607,7 +641,7 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
 		if (newGamePath.GetFileExtension() == ".ppst") {
 			// TODO: Should verify that it's for the correct game....
 			INFO_LOG(Log::Loader, "New game is a save state - just load it.");
-			SaveState::Load(newGamePath, -1, [](SaveState::Status status, std::string_view message) {
+			SaveState::Load(newGamePath, -1, [](SaveState::Status status, std::string_view message, std::string_view metadata) {
 				Core_Resume();
 				System_Notify(SystemNotification::DISASSEMBLY);
 			});
@@ -660,14 +694,12 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
 				// temporary workaround for hotkey its freeze the ui when open chat screen using hotkey and native keyboard is enable
 				if (g_Config.bBypassOSKWithKeyboard) {
 					// TODO: Make translatable.
-					g_OSD.Show(OSDType::MESSAGE_INFO, "Disable \"Use system native keyboard\" to use ctrl + c hotkey", 2.0f);
+					g_OSD.Show(OSDType::MESSAGE_INFO, "Disable \"Use system native keyboard\" to use chat hotkey", 2.0f);
 				} else {
-					UI::EventParams e{};
-					OnChatMenu.Trigger(e);
+					OpenChat(true);
 				}
 			} else {
-				UI::EventParams e{};
-				OnChatMenu.Trigger(e);
+				OpenChat(false);
 			}
 		} else if (!g_Config.bEnableNetworkChat) {
 			if (chatButton_) {
@@ -699,31 +731,6 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
 	}
 }
 
-bool EmuScreen::UnsyncTouch(const TouchInput &touch) {
-	System_Notify(SystemNotification::ACTIVITY);
-
-	bool ignoreGamepad = false;
-
-	if (chatMenu_ && chatMenu_->GetVisibility() == UI::V_VISIBLE) {
-		// Avoid pressing touch button behind the chat
-		if (chatMenu_->Contains(touch.x, touch.y)) {
-			ignoreGamepad = true;
-		}
-	}
-
-	if (touch.flags & TouchInputFlags::DOWN) {
-		if (!(g_Config.bShowImDebugger && imguiInited_) && !ignoreGamepad) {
-			// This just prevents the gamepad from timing out.
-			GamepadTouch();
-		}
-	}
-
-	if (root_) {
-		UIScreen::UnsyncTouch(touch);
-	}
-	return true;
-}
-
 // TODO: We should replace the "fpsLimit" system with a speed factor.
 static void ShowFpsLimitNotice() {
 	int fpsLimit = 60;
@@ -751,11 +758,334 @@ static void ShowFpsLimitNotice() {
 void EmuScreen::OnVKey(VirtKey virtualKeyCode, bool down) {
 	if (!IsOnTop())
 		return;
+	queuedVirtKeys_.push_back(std::make_pair(virtualKeyCode, down));
+}
 
-	auto sc = GetI18NCategory(I18NCat::SCREEN);
+void EmuScreen::ProcessQueuedVKeys() {
+	for (auto iter : queuedVirtKeys_) {
+		ProcessVKey(iter.first, iter.second);
+	}
+	queuedVirtKeys_.clear();
+}
+
+// Synchronized processing of virtkeys.
+void EmuScreen::ProcessVKey(VirtKey virtKey, bool down) {
 	auto mc = GetI18NCategory(I18NCat::MAPPABLECONTROLS);
+	auto sc = GetI18NCategory(I18NCat::SCREEN);
 
-	switch (virtualKeyCode) {
+	switch (virtKey) {
+	case VIRTKEY_PAUSE:
+		// Note: We don't check NetworkWarnUserIfOnlineAndCantSpeed, because we can keep
+		// running in the background of the menu.
+		if (down) {
+			pauseTrigger_ = true;
+		}
+		break;
+
+	case VIRTKEY_SCREENSHOT:
+		if (down) {
+			TakeUserScreenshot();
+		}
+		break;
+
+	case VIRTKEY_TOGGLE_DEBUGGER:
+		if (down) {
+			g_Config.bShowImDebugger = !g_Config.bShowImDebugger;
+		}
+		break;
+	case VIRTKEY_TOGGLE_TILT:
+		if (down) {
+			g_Config.bTiltInputEnabled = !g_Config.bTiltInputEnabled;
+			if (!g_Config.bTiltInputEnabled) {
+				// Reset whatever got tilted.
+				switch (g_Config.iTiltInputType) {
+				case TILT_ANALOG:
+					__CtrlSetAnalogXY(0, 0, 0);
+					break;
+				case TILT_ACTION_BUTTON:
+					__CtrlUpdateButtons(0, CTRL_CROSS | CTRL_CIRCLE | CTRL_SQUARE | CTRL_TRIANGLE);
+					break;
+				case TILT_DPAD:
+					__CtrlUpdateButtons(0, CTRL_UP | CTRL_DOWN | CTRL_LEFT | CTRL_RIGHT);
+					break;
+				case TILT_TRIGGER_BUTTONS:
+					__CtrlUpdateButtons(0, CTRL_LTRIGGER | CTRL_RTRIGGER);
+					break;
+				}
+			}
+		}
+		break;
+	case VIRTKEY_OPENCHAT:
+		if (down) {
+			if (g_Config.bEnableNetworkChat && !g_Config.bShowImDebugger) {
+				UI::EventParams e{};
+				g_controlMapper.ForceReleaseVKey(VIRTKEY_OPENCHAT);
+				OpenChat(true);
+			}
+		}
+		break;
+
+	case VIRTKEY_AXIS_SWAP_TOGGLE:
+		if (down) {
+			g_controlMapper.ToggleSwapAxes();
+			g_OSD.Show(OSDType::MESSAGE_INFO, mc->T("AxisSwap"));  // best string we have.
+		}
+		break;
+
+	case VIRTKEY_DEVMENU:
+		if (down) {
+			UI::EventParams e{};
+			OnDevMenu.Trigger(e);
+		}
+		break;
+
+	case VIRTKEY_TOGGLE_MOUSE:
+		if (down) {
+			g_Config.bMouseControl = !g_Config.bMouseControl;
+		}
+		break;
+
+	case VIRTKEY_TEXTURE_DUMP:
+		if (down) {
+			g_Config.bSaveNewTextures = !g_Config.bSaveNewTextures;
+			if (g_Config.bSaveNewTextures) {
+				g_OSD.Show(OSDType::MESSAGE_SUCCESS, sc->T("saveNewTextures_true", "Textures will now be saved to your storage"), 2.0, "savetexturechanged");
+			} else {
+				g_OSD.Show(OSDType::MESSAGE_INFO, sc->T("saveNewTextures_false", "Texture saving was disabled"), 2.0, "savetexturechanged");
+			}
+			System_PostUIMessage(UIMessage::GPU_CONFIG_CHANGED);
+		}
+		break;
+
+	case VIRTKEY_TEXTURE_REPLACE:
+		if (down) {
+			g_Config.bReplaceTextures = !g_Config.bReplaceTextures;
+			if (g_Config.bReplaceTextures) {
+				g_OSD.Show(OSDType::MESSAGE_SUCCESS, sc->T("replaceTextures_true", "Texture replacement enabled"), 2.0, "replacetexturechanged");
+			} else {
+				g_OSD.Show(OSDType::MESSAGE_INFO, sc->T("replaceTextures_false", "Textures are no longer being replaced"), 2.0, "replacetexturechanged");
+			}
+			System_PostUIMessage(UIMessage::GPU_CONFIG_CHANGED);
+		}
+		break;
+
+	case VIRTKEY_MUTE_TOGGLE:
+		if (down) {
+			g_Config.bEnableSound = !g_Config.bEnableSound;
+		}
+		break;
+
+	case VIRTKEY_SCREEN_ROTATION_VERTICAL:
+		if (down) {
+			DisplayLayoutConfig &config = g_Config.GetDisplayLayoutConfig(GetDeviceOrientation());
+			config.iInternalScreenRotation = ROTATION_LOCKED_VERTICAL;
+		}
+		break;
+	case VIRTKEY_SCREEN_ROTATION_VERTICAL180:
+		if (down) {
+			DisplayLayoutConfig &config = g_Config.GetDisplayLayoutConfig(GetDeviceOrientation());
+			config.iInternalScreenRotation = ROTATION_LOCKED_VERTICAL180;
+		}
+		break;
+	case VIRTKEY_SCREEN_ROTATION_HORIZONTAL:
+		if (down) {
+			DisplayLayoutConfig &config = g_Config.GetDisplayLayoutConfig(GetDeviceOrientation());
+			config.iInternalScreenRotation = ROTATION_LOCKED_HORIZONTAL;
+		}
+		break;
+	case VIRTKEY_SCREEN_ROTATION_HORIZONTAL180:
+		if (down) {
+			DisplayLayoutConfig &config = g_Config.GetDisplayLayoutConfig(GetDeviceOrientation());
+			config.iInternalScreenRotation = ROTATION_LOCKED_HORIZONTAL180;
+		}
+		break;
+
+	case VIRTKEY_TOGGLE_WLAN:
+		if (down) {
+			// Let's not allow the user to toggle wlan while connected, could get confusing.
+			if (!g_netInited) {
+				auto n = GetI18NCategory(I18NCat::NETWORKING);
+				auto di = GetI18NCategory(I18NCat::DIALOG);
+				g_Config.bEnableWlan = !g_Config.bEnableWlan;
+				// Try to avoid adding more strings so we piece together a message from existing ones.
+				g_OSD.Show(OSDType::MESSAGE_INFO, StringFromFormat(
+					"%s: %s", n->T_cstr("Enable networking"), g_Config.bEnableWlan ? di->T_cstr("Enabled") : di->T_cstr("Disabled")), 2.0, "toggle_wlan");
+			}
+		}
+		break;
+
+	case VIRTKEY_TOGGLE_FULLSCREEN:
+		if (down) {
+			// TODO: Limit to platforms that can support fullscreen.
+			g_Config.bFullScreen = !g_Config.bFullScreen;
+			System_ApplyFullscreenState();
+		}
+		break;
+
+	case VIRTKEY_TOGGLE_TOUCH_CONTROLS:
+		if (down) {
+			if (g_Config.bShowTouchControls) {
+				// This just messes with opacity if enabled, so you can touch the screen again to bring them back.
+				if (GamepadGetOpacity() < 0.01f) {
+					GamepadTouch();
+				} else {
+					GamepadResetTouch();
+				}
+			} else {
+				// If touch controls are disabled though, they'll get enabled.
+				g_Config.bShowTouchControls = true;
+				RecreateViews();
+				GamepadTouch();
+			}
+		}
+		break;
+
+	case VIRTKEY_REWIND:
+		if (down) {
+			if (!Achievements::WarnUserIfHardcoreModeActive(false) && !NetworkWarnUserIfOnlineAndCantSavestate() && !bootPending_) {
+				if (SaveState::CanRewind()) {
+					SaveState::Rewind(&ShowMessageAfterSaveStateAction);
+				} else {
+					g_OSD.Show(OSDType::MESSAGE_WARNING, sc->T("norewind", "No rewind save states available"), 2.0);
+				}
+			}
+		}
+		break;
+
+	case VIRTKEY_PAUSE_NO_MENU:
+		if (down) {
+			if (!NetworkWarnUserIfOnlineAndCantSpeed()) {
+				// We re-use debug break/resume to implement pause/resume without a menu.
+				if (coreState == CORE_STEPPING_CPU) {  // should we check reason?
+					Core_Resume();
+				} else {
+					Core_Break(BreakReason::UIPause);
+				}
+			}
+		}
+		break;
+
+	case VIRTKEY_EXIT_APP:
+		if (down) {
+			if (!bootPending_) {
+				std::string confirmExitMessage = GetConfirmExitMessage();
+				if (!confirmExitMessage.empty()) {
+					auto di = GetI18NCategory(I18NCat::DIALOG);
+					auto mm = GetI18NCategory(I18NCat::MAINMENU);
+					confirmExitMessage += '\n';
+					confirmExitMessage += di->T("Are you sure you want to exit?");
+					screenManager()->push(new UI::MessagePopupScreen(di->T("Exit"), confirmExitMessage, di->T("Yes"), di->T("No"), [](bool result) {
+						if (result) {
+							System_ExitApp();
+						}
+					}));
+				} else {
+					System_ExitApp();
+				}
+			}
+		}
+		break;
+
+	case VIRTKEY_FRAME_ADVANCE:
+		if (down) {
+			// Can't do this reliably in an async fashion, so we just set a variable.
+			// Is this used by anyone? There's no user-friendly way to resume, other than PAUSE_NO_MENU or the debugger.
+			if (!NetworkWarnUserIfOnlineAndCantSpeed()) {
+				if (Core_IsStepping()) {
+					Core_Resume();
+					frameStep_ = true;
+				} else {
+					Core_Break(BreakReason::FrameAdvance);
+				}
+			}
+		}
+		break;
+
+	case VIRTKEY_SPEED_TOGGLE:
+		if (down) {
+			if (!NetworkWarnUserIfOnlineAndCantSpeed()) {
+				// Cycle through enabled speeds.
+				if (PSP_CoreParameter().fpsLimit == FPSLimit::NORMAL && g_Config.iFpsLimit1 >= 0) {
+					PSP_CoreParameter().fpsLimit = FPSLimit::CUSTOM1;
+				} else if (PSP_CoreParameter().fpsLimit == FPSLimit::CUSTOM1 && g_Config.iFpsLimit2 >= 0) {
+					PSP_CoreParameter().fpsLimit = FPSLimit::CUSTOM2;
+				} else if (PSP_CoreParameter().fpsLimit == FPSLimit::CUSTOM1 || PSP_CoreParameter().fpsLimit == FPSLimit::CUSTOM2) {
+					PSP_CoreParameter().fpsLimit = FPSLimit::NORMAL;
+				}
+
+				ShowFpsLimitNotice();
+			}
+		}
+		break;
+
+	case VIRTKEY_RESET_EMULATION:
+		if (down) {
+			System_PostUIMessage(UIMessage::REQUEST_GAME_RESET);
+		}
+		break;
+
+#ifndef MOBILE_DEVICE
+	case VIRTKEY_RECORD:
+		if (down) {
+			if (g_Config.bDumpFrames == g_Config.bDumpAudio) {
+				g_Config.bDumpFrames = !g_Config.bDumpFrames;
+				g_Config.bDumpAudio = !g_Config.bDumpAudio;
+			} else {
+				// This hotkey should always toggle both audio and video together.
+				// So let's make sure that's the only outcome even if video OR audio was already being dumped.
+				if (g_Config.bDumpFrames) {
+					AVIDump::Stop();
+					AVIDump::Start(PSP_CoreParameter().renderWidth, PSP_CoreParameter().renderHeight);
+					g_Config.bDumpAudio = true;
+				} else {
+					WAVDump::Reset();
+					g_Config.bDumpFrames = true;
+				}
+			}
+		}
+		break;
+#endif
+
+	case VIRTKEY_SAVE_STATE:
+		if (down) {
+			if (!Achievements::WarnUserIfHardcoreModeActive(true) && !NetworkWarnUserIfOnlineAndCantSavestate() && !bootPending_) {
+				SaveState::SaveSlot(SaveState::GetGamePrefix(g_paramSFO), g_Config.iCurrentStateSlot, &ShowMessageAfterSaveStateAction);
+			}
+		}
+		break;
+	case VIRTKEY_LOAD_STATE:
+		if (down) {
+			if (!Achievements::WarnUserIfHardcoreModeActive(false) && !NetworkWarnUserIfOnlineAndCantSavestate() && !bootPending_) {
+				if (g_Config.bConfirmLoadState) {
+					std::string prefix = SaveState::GetGamePrefix(g_paramSFO);
+					int slot = g_Config.iCurrentStateSlot;
+					screenManager()->push(new LoadStateConfirmScreen(prefix, slot, [prefix, slot](bool result) {
+						if (result) {
+							SaveState::LoadSlot(prefix, slot, &ShowMessageAfterSaveStateAction);
+						}
+					}));
+				} else {
+					SaveState::LoadSlot(SaveState::GetGamePrefix(g_paramSFO), g_Config.iCurrentStateSlot, &ShowMessageAfterSaveStateAction);
+				}
+			}
+		}
+		break;
+	case VIRTKEY_PREVIOUS_SLOT:
+		if (down) {
+			if (!Achievements::WarnUserIfHardcoreModeActive(true) && !NetworkWarnUserIfOnlineAndCantSavestate()) {
+				SaveState::PrevSlot();
+				System_PostUIMessage(UIMessage::SAVESTATE_DISPLAY_SLOT);
+			}
+		}
+		break;
+	case VIRTKEY_NEXT_SLOT:
+		if (down) {
+			if (!Achievements::WarnUserIfHardcoreModeActive(true) && !NetworkWarnUserIfOnlineAndCantSavestate()) {
+				SaveState::NextSlot();
+				System_PostUIMessage(UIMessage::SAVESTATE_DISPLAY_SLOT);
+			}
+		}
+		break;
 	case VIRTKEY_FASTFORWARD:
 		if (down && !NetworkWarnUserIfOnlineAndCantSpeed() && !bootPending_) {
 			/*
@@ -800,284 +1130,7 @@ void EmuScreen::OnVKey(VirtKey virtualKeyCode, bool down) {
 	case VIRTKEY_RAPID_FIRE:
 		__CtrlSetRapidFire(down, g_Config.iRapidFireInterval);
 		break;
-	default:
-		// To make sure we're not in an async context.
-		if (down) {
-			queuedVirtKeys_.push_back(virtualKeyCode);
-		}
-		break;
-	}
-}
 
-void EmuScreen::ProcessQueuedVKeys() {
-	for (auto iter : queuedVirtKeys_) {
-		ProcessVKey(iter);
-	}
-	queuedVirtKeys_.clear();
-}
-
-// Synchronized processing of virtkeys.
-void EmuScreen::ProcessVKey(VirtKey virtKey) {
-	auto mc = GetI18NCategory(I18NCat::MAPPABLECONTROLS);
-	auto sc = GetI18NCategory(I18NCat::SCREEN);
-
-	switch (virtKey) {
-	case VIRTKEY_PAUSE:
-		// Note: We don't check NetworkWarnUserIfOnlineAndCantSpeed, because we can keep
-		// running in the background of the menu.
-		pauseTrigger_ = true;
-		break;
-
-	case VIRTKEY_SCREENSHOT:
-		TakeUserScreenshot();
-		break;
-
-	case VIRTKEY_TOGGLE_DEBUGGER:
-		g_Config.bShowImDebugger = !g_Config.bShowImDebugger;
-		break;
-	case VIRTKEY_TOGGLE_TILT:
-		g_Config.bTiltInputEnabled = !g_Config.bTiltInputEnabled;
-		if (!g_Config.bTiltInputEnabled) {
-			// Reset whatever got tilted.
-			switch (g_Config.iTiltInputType) {
-			case TILT_ANALOG:
-				__CtrlSetAnalogXY(0, 0, 0);
-				break;
-			case TILT_ACTION_BUTTON:
-				__CtrlUpdateButtons(0, CTRL_CROSS | CTRL_CIRCLE | CTRL_SQUARE | CTRL_TRIANGLE);
-				break;
-			case TILT_DPAD:
-				__CtrlUpdateButtons(0, CTRL_UP | CTRL_DOWN | CTRL_LEFT | CTRL_RIGHT);
-				break;
-			case TILT_TRIGGER_BUTTONS:
-				__CtrlUpdateButtons(0, CTRL_LTRIGGER | CTRL_RTRIGGER);
-				break;
-			}
-		}
-		break;
-	case VIRTKEY_OPENCHAT:
-		if (g_Config.bEnableNetworkChat && !g_Config.bShowImDebugger) {
-			UI::EventParams e{};
-			OnChatMenu.Trigger(e);
-			g_controlMapper.ForceReleaseVKey(VIRTKEY_OPENCHAT);
-		}
-		break;
-
-	case VIRTKEY_AXIS_SWAP:
-		g_controlMapper.ToggleSwapAxes();
-		g_OSD.Show(OSDType::MESSAGE_INFO, mc->T("AxisSwap"));  // best string we have.
-		break;
-
-	case VIRTKEY_DEVMENU:
-		{
-			UI::EventParams e{};
-			OnDevMenu.Trigger(e);
-		}
-		break;
-
-	case VIRTKEY_TOGGLE_MOUSE:
-		g_Config.bMouseControl = !g_Config.bMouseControl;
-		break;
-
-	case VIRTKEY_TEXTURE_DUMP:
-		g_Config.bSaveNewTextures = !g_Config.bSaveNewTextures;
-		if (g_Config.bSaveNewTextures) {
-			g_OSD.Show(OSDType::MESSAGE_SUCCESS, sc->T("saveNewTextures_true", "Textures will now be saved to your storage"), 2.0, "savetexturechanged");
-		} else {
-			g_OSD.Show(OSDType::MESSAGE_INFO, sc->T("saveNewTextures_false", "Texture saving was disabled"), 2.0, "savetexturechanged");
-		}
-		System_PostUIMessage(UIMessage::GPU_CONFIG_CHANGED);
-		break;
-
-	case VIRTKEY_TEXTURE_REPLACE:
-		g_Config.bReplaceTextures = !g_Config.bReplaceTextures;
-		if (g_Config.bReplaceTextures) {
-			g_OSD.Show(OSDType::MESSAGE_SUCCESS, sc->T("replaceTextures_true", "Texture replacement enabled"), 2.0, "replacetexturechanged");
-		} else {
-			g_OSD.Show(OSDType::MESSAGE_INFO, sc->T("replaceTextures_false", "Textures are no longer being replaced"), 2.0, "replacetexturechanged");
-		}
-		System_PostUIMessage(UIMessage::GPU_CONFIG_CHANGED);
-		break;
-
-	case VIRTKEY_MUTE_TOGGLE:
-		g_Config.bEnableSound = !g_Config.bEnableSound;
-		break;
-
-	case VIRTKEY_SCREEN_ROTATION_VERTICAL:
-	{
-		DisplayLayoutConfig &config = g_Config.GetDisplayLayoutConfig(GetDeviceOrientation());
-		config.iInternalScreenRotation = ROTATION_LOCKED_VERTICAL;
-		break;
-	}
-	case VIRTKEY_SCREEN_ROTATION_VERTICAL180:
-	{
-		DisplayLayoutConfig &config = g_Config.GetDisplayLayoutConfig(GetDeviceOrientation());
-		config.iInternalScreenRotation = ROTATION_LOCKED_VERTICAL180;
-		break;
-	}
-	case VIRTKEY_SCREEN_ROTATION_HORIZONTAL:
-	{
-		DisplayLayoutConfig &config = g_Config.GetDisplayLayoutConfig(GetDeviceOrientation());
-		config.iInternalScreenRotation = ROTATION_LOCKED_HORIZONTAL;
-		break;
-	}
-	case VIRTKEY_SCREEN_ROTATION_HORIZONTAL180:
-	{
-		DisplayLayoutConfig &config = g_Config.GetDisplayLayoutConfig(GetDeviceOrientation());
-		config.iInternalScreenRotation = ROTATION_LOCKED_HORIZONTAL180;
-		break;
-	}
-
-	case VIRTKEY_TOGGLE_WLAN:
-		// Let's not allow the user to toggle wlan while connected, could get confusing.
-		if (!g_netInited) {
-			auto n = GetI18NCategory(I18NCat::NETWORKING);
-			auto di = GetI18NCategory(I18NCat::DIALOG);
-			g_Config.bEnableWlan = !g_Config.bEnableWlan;
-			// Try to avoid adding more strings so we piece together a message from existing ones.
-			g_OSD.Show(OSDType::MESSAGE_INFO, StringFromFormat(
-				"%s: %s", n->T_cstr("Enable networking"), g_Config.bEnableWlan ? di->T_cstr("Enabled") : di->T_cstr("Disabled")), 2.0, "toggle_wlan");
-		}
-		break;
-
-	case VIRTKEY_TOGGLE_FULLSCREEN:
-		// TODO: Limit to platforms that can support fullscreen.
-		g_Config.bFullScreen = !g_Config.bFullScreen;
-		System_ApplyFullscreenState();
-		break;
-
-	case VIRTKEY_TOGGLE_TOUCH_CONTROLS:
-		if (g_Config.bShowTouchControls) {
-			// This just messes with opacity if enabled, so you can touch the screen again to bring them back.
-			if (GamepadGetOpacity() < 0.01f) {
-				GamepadTouch();
-			} else {
-				GamepadResetTouch();
-			}
-		} else {
-			// If touch controls are disabled though, they'll get enabled.
-			g_Config.bShowTouchControls = true;
-			RecreateViews();
-			GamepadTouch();
-		}
-		break;
-
-	case VIRTKEY_REWIND:
-		if (!Achievements::WarnUserIfHardcoreModeActive(false) && !NetworkWarnUserIfOnlineAndCantSavestate() && !bootPending_) {
-			if (SaveState::CanRewind()) {
-				SaveState::Rewind(&AfterSaveStateAction);
-			} else {
-				g_OSD.Show(OSDType::MESSAGE_WARNING, sc->T("norewind", "No rewind save states available"), 2.0);
-			}
-		}
-		break;
-
-	case VIRTKEY_PAUSE_NO_MENU:
-		if (!NetworkWarnUserIfOnlineAndCantSpeed()) {
-			// We re-use debug break/resume to implement pause/resume without a menu.
-			if (coreState == CORE_STEPPING_CPU) {  // should we check reason?
-				Core_Resume();
-			} else {
-				Core_Break(BreakReason::UIPause);
-			}
-		}
-		break;
-
-	case VIRTKEY_EXIT_APP:
-	{
-		if (!bootPending_) {
-			std::string confirmExitMessage = GetConfirmExitMessage();
-			if (!confirmExitMessage.empty()) {
-				auto di = GetI18NCategory(I18NCat::DIALOG);
-				auto mm = GetI18NCategory(I18NCat::MAINMENU);
-				confirmExitMessage += '\n';
-				confirmExitMessage += di->T("Are you sure you want to exit?");
-				screenManager()->push(new UI::MessagePopupScreen(mm->T("Exit"), confirmExitMessage, di->T("Yes"), di->T("No"), [=](bool result) {
-					if (result) {
-						System_ExitApp();
-					}
-				}));
-			} else {
-				System_ExitApp();
-			}
-		}
-		break;
-	}
-
-	case VIRTKEY_FRAME_ADVANCE:
-		// Can't do this reliably in an async fashion, so we just set a variable.
-		// Is this used by anyone? There's no user-friendly way to resume, other than PAUSE_NO_MENU or the debugger.
-		if (!NetworkWarnUserIfOnlineAndCantSpeed()) {
-			if (Core_IsStepping()) {
-				Core_Resume();
-				frameStep_ = true;
-			} else {
-				Core_Break(BreakReason::FrameAdvance);
-			}
-		}
-		break;
-
-	case VIRTKEY_SPEED_TOGGLE:
-		if (!NetworkWarnUserIfOnlineAndCantSpeed()) {
-			// Cycle through enabled speeds.
-			if (PSP_CoreParameter().fpsLimit == FPSLimit::NORMAL && g_Config.iFpsLimit1 >= 0) {
-				PSP_CoreParameter().fpsLimit = FPSLimit::CUSTOM1;
-			} else if (PSP_CoreParameter().fpsLimit == FPSLimit::CUSTOM1 && g_Config.iFpsLimit2 >= 0) {
-				PSP_CoreParameter().fpsLimit = FPSLimit::CUSTOM2;
-			} else if (PSP_CoreParameter().fpsLimit == FPSLimit::CUSTOM1 || PSP_CoreParameter().fpsLimit == FPSLimit::CUSTOM2) {
-				PSP_CoreParameter().fpsLimit = FPSLimit::NORMAL;
-			}
-
-			ShowFpsLimitNotice();
-		}
-		break;
-
-	case VIRTKEY_RESET_EMULATION:
-		System_PostUIMessage(UIMessage::REQUEST_GAME_RESET);
-		break;
-
-#ifndef MOBILE_DEVICE
-	case VIRTKEY_RECORD:
-		if (g_Config.bDumpFrames == g_Config.bDumpAudio) {
-			g_Config.bDumpFrames = !g_Config.bDumpFrames;
-			g_Config.bDumpAudio = !g_Config.bDumpAudio;
-		} else {
-			// This hotkey should always toggle both audio and video together.
-			// So let's make sure that's the only outcome even if video OR audio was already being dumped.
-			if (g_Config.bDumpFrames) {
-				AVIDump::Stop();
-				AVIDump::Start(PSP_CoreParameter().renderWidth, PSP_CoreParameter().renderHeight);
-				g_Config.bDumpAudio = true;
-			} else {
-				WAVDump::Reset();
-				g_Config.bDumpFrames = true;
-			}
-		}
-		break;
-#endif
-
-	case VIRTKEY_SAVE_STATE:
-		if (!Achievements::WarnUserIfHardcoreModeActive(true) && !NetworkWarnUserIfOnlineAndCantSavestate() && !bootPending_) {
-			SaveState::SaveSlot(SaveState::GetGamePrefix(g_paramSFO), g_Config.iCurrentStateSlot, &AfterSaveStateAction);
-		}
-		break;
-	case VIRTKEY_LOAD_STATE:
-		if (!Achievements::WarnUserIfHardcoreModeActive(false) && !NetworkWarnUserIfOnlineAndCantSavestate() && !bootPending_) {
-			SaveState::LoadSlot(SaveState::GetGamePrefix(g_paramSFO), g_Config.iCurrentStateSlot, &AfterSaveStateAction);
-		}
-		break;
-	case VIRTKEY_PREVIOUS_SLOT:
-		if (!Achievements::WarnUserIfHardcoreModeActive(true) && !NetworkWarnUserIfOnlineAndCantSavestate()) {
-			SaveState::PrevSlot();
-			System_PostUIMessage(UIMessage::SAVESTATE_DISPLAY_SLOT);
-		}
-		break;
-	case VIRTKEY_NEXT_SLOT:
-		if (!Achievements::WarnUserIfHardcoreModeActive(true) && !NetworkWarnUserIfOnlineAndCantSavestate()) {
-			SaveState::NextSlot();
-			System_PostUIMessage(UIMessage::SAVESTATE_DISPLAY_SLOT);
-		}
-		break;
 	default:
 		break;
 	}
@@ -1118,78 +1171,24 @@ void EmuScreen::OnVKeyAnalog(VirtKey virtualKeyCode, float value) {
 	limitMode = PSP_CoreParameter().analogFpsLimit == 60 ? FPSLimit::NORMAL : FPSLimit::ANALOG;
 }
 
-bool EmuScreen::UnsyncKey(const KeyInput &key) {
-	System_Notify(SystemNotification::ACTIVITY);
-
-	// Update imgui modifier flags
-	if (key.flags & (KeyInputFlags::DOWN | KeyInputFlags::UP)) {
-		bool down = (key.flags & KeyInputFlags::DOWN) != 0;
-		switch (key.keyCode) {
-		case NKCODE_CTRL_LEFT: keyCtrlLeft_ = down; break;
-		case NKCODE_CTRL_RIGHT: keyCtrlRight_ = down; break;
-		case NKCODE_SHIFT_LEFT: keyShiftLeft_ = down; break;
-		case NKCODE_SHIFT_RIGHT: keyShiftRight_ = down; break;
-		case NKCODE_ALT_LEFT: keyAltLeft_ = down; break;
-		case NKCODE_ALT_RIGHT: keyAltRight_ = down; break;
-		default: break;
-		}
-	}
-
+InputMode EmuScreen::PassInputToMapper() const {
 	const bool chatMenuOpen = chatMenu_ && chatMenu_->GetVisibility() == UI::V_VISIBLE;
+	if (chatMenuOpen) {
+		return InputMode::None;
+	}
 
-	if (chatMenuOpen || (g_Config.bShowImDebugger && imguiInited_)) {
-		// Note: Allow some Vkeys through, so we can toggle the imgui for example (since we actually block the control mapper otherwise in imgui mode).
-		// We need to manually implement it here :/
-		if (g_Config.bShowImDebugger && imguiInited_) {
-			if (key.flags & (KeyInputFlags::UP | KeyInputFlags::DOWN)) {
-				InputMapping mapping(key.deviceId, key.keyCode);
-				std::vector<int> pspButtons;
-				bool mappingFound = KeyMap::InputMappingToPspButton(mapping, &pspButtons);
-				if (mappingFound) {
-					for (auto b : pspButtons) {
-						if (b == VIRTKEY_TOGGLE_DEBUGGER || b == VIRTKEY_PAUSE) {
-							return g_controlMapper.Key(key, &pauseTrigger_);
-						}
-					}
-				}
-			}
-			UI::EnableFocusMovement(false);
-			// Enable gamepad controls while running imgui (but ignore mouse/keyboard).
-			switch (key.deviceId) {
-			case DEVICE_ID_KEYBOARD:
-				if (!ImGui::GetIO().WantCaptureKeyboard) {
-					g_controlMapper.Key(key, &pauseTrigger_);
-				}
-				break;
-			case DEVICE_ID_MOUSE:
-				if (!ImGui::GetIO().WantCaptureMouse) {
-					g_controlMapper.Key(key, &pauseTrigger_);
-				}
-				break;
-			default:
-				g_controlMapper.Key(key, &pauseTrigger_);
-				break;
-			}
-		} else {
-			// Let up-events through to the controlMapper_ so input doesn't get stuck.
-			if (key.flags & KeyInputFlags::UP) {
-				g_controlMapper.Key(key, &pauseTrigger_);
-			}
+	InputMode modes = InputMode::Keyboard | InputMode::Mouse | InputMode::Other | InputMode::ImDebuggerToggle;
+	if (g_Config.bShowImDebugger && imguiInited_) {
+		if (ImGui::GetIO().WantCaptureKeyboard) {
+			modes &= ~InputMode::Keyboard;
 		}
-
-		return UIScreen::UnsyncKey(key);
-	}
-	return g_controlMapper.Key(key, &pauseTrigger_);
-}
-
-void EmuScreen::UnsyncAxis(const AxisInput *axes, size_t count) {
-	System_Notify(SystemNotification::ACTIVITY);
-
-	if (UI::IsFocusMovementEnabled()) {
-		return UIScreen::UnsyncAxis(axes, count);
+		if (ImGui::GetIO().WantCaptureMouse) {
+			modes &= ~InputMode::Mouse;
+		}
+		return modes;
 	}
 
-	return g_controlMapper.Axis(axes, count);
+	return modes;
 }
 
 bool EmuScreen::key(const KeyInput &key) {
@@ -1211,11 +1210,29 @@ bool EmuScreen::key(const KeyInput &key) {
 	return retval;
 }
 
-void EmuScreen::touch(const TouchInput &touch) {
+bool EmuScreen::touch(const TouchInput &touch) {
+	System_Notify(SystemNotification::ACTIVITY);
+
+	bool ignoreGamepad = false;
+
+	if (chatMenu_ && chatMenu_->GetVisibility() == UI::V_VISIBLE) {
+		// Avoid pressing touch button behind the chat
+		if (chatMenu_->Contains(touch.x, touch.y)) {
+			ignoreGamepad = true;
+		}
+	}
+
+	if (touch.flags & TouchInputFlags::DOWN) {
+		if (!(g_Config.bShowImDebugger && imguiInited_) && !ignoreGamepad) {
+			// This just prevents the gamepad from timing out.
+			GamepadTouch();
+		}
+	}
+
 	if (g_Config.bShowImDebugger && imguiInited_) {
 		ImGui_ImplPlatform_TouchEvent(touch);
 		if (!ImGui::GetIO().WantCaptureMouse) {
-			UIScreen::touch(touch);
+			return UIScreen::touch(touch);
 		}
 	} else if (g_Config.bMouseControl && !(touch.flags & TouchInputFlags::UP) && (touch.flags & TouchInputFlags::MOUSE)) {
 		// don't do anything as the mouse pointer is hidden in this case.
@@ -1233,8 +1250,9 @@ void EmuScreen::touch(const TouchInput &touch) {
 				}
 			}
 		}
-		UIScreen::touch(touch);
+		return UIScreen::touch(touch);
 	}
+	return false;
 }
 
 // TODO: Shouldn't actually need bounds for this, Anchor can center too.
@@ -1264,7 +1282,8 @@ void EmuScreen::CreateViews() {
 
 	TouchControlConfig &touch = g_Config.GetTouchControlsConfig(deviceOrientation);
 
-	const Bounds &bounds = screenManager()->getUIContext()->GetLayoutBounds();
+	const Bounds &bounds = GetLayoutBounds(*screenManager()->getUIContext());
+
 	InitPadLayout(&touch, deviceOrientation, bounds.w, bounds.h);
 
 	root_ = CreatePadLayout(touch, bounds.w, bounds.h, &pauseTrigger_, &g_controlMapper);
@@ -1315,9 +1334,12 @@ void EmuScreen::CreateViews() {
 		if (g_Config.iChatButtonPosition != 8) {
 			auto n = GetI18NCategory(I18NCat::NETWORKING);
 			AnchorLayoutParams *layoutParams = AnchorInCorner(bounds, g_Config.iChatButtonPosition, 80.0f, 50.0f);
-			ChoiceWithValueDisplay *btn = new ChoiceWithValueDisplay(&newChatMessages_, n->T("Chat"), layoutParams);
-			root_->Add(btn)->OnClick.Handle(this, &EmuScreen::OnChat);
-			chatButton_ = btn;
+			chatButton_ = root_->Add(new ChoiceWithValueDisplay(&newChatMessages_, n->T("Chat"), layoutParams));
+			chatButton_->OnClick.Add([this](UI::EventParams &e) {
+				// Really, the check here should be "has a hard keyboard".
+				bool focus = System_GetPropertyInt(SYSPROP_DEVICE_TYPE) == DEVICE_TYPE_DESKTOP;
+				OpenChat(focus);
+			});
 		}
 		chatMenu_ = root_->Add(new ChatMenu(GetRequesterToken(), screenManager()->getUIContext()->GetBounds(), screenManager(), new LayoutParams(FILL_PARENT, FILL_PARENT)));
 		chatMenu_->SetVisibility(UI::V_GONE);
@@ -1403,28 +1425,32 @@ void EmuScreen::OnDevTools(UI::EventParams &params) {
 	screenManager()->push(devMenu);
 }
 
-void EmuScreen::OnChat(UI::EventParams &params) {
+void EmuScreen::OpenChat(bool focus) {
 	if (chatButton_ != nullptr && chatButton_->GetVisibility() == UI::V_VISIBLE) {
 		chatButton_->SetVisibility(UI::V_GONE);
 	}
 	if (chatMenu_ != nullptr) {
 		chatMenu_->SetVisibility(UI::V_VISIBLE);
 
-#if PPSSPP_PLATFORM(WINDOWS) || defined(USING_QT_UI) || defined(SDL)
-		UI::EnableFocusMovement(true);
-		root_->SetDefaultFocusView(chatMenu_);
+		if (focus) {
+			UI::EnableFocusMovement(true);
+			root_->SetDefaultFocusView(chatMenu_);
 
-		chatMenu_->SetFocus();
-		UI::View *focused = UI::GetFocusedView();
-		if (focused) {
-			root_->SubviewFocused(focused);
+			chatMenu_->SetFocus(UI::FocusFlags::CAUSE_FORCED);
+			UI::View *focused = UI::GetFocusedView();
+			if (focused) {
+				root_->SubviewFocused(focused);
+			}
 		}
-#endif
 	}
 }
 
 // To avoid including proAdhoc.h, which includes a lot of stuff.
 int GetChatMessageCount();
+
+ViewLayoutMode EmuScreen::LayoutMode() const {
+	return ViewLayoutMode::ApplyInsets;
+}
 
 void EmuScreen::update() {
 	using namespace UI;
@@ -1461,7 +1487,7 @@ void EmuScreen::update() {
 		UpdateUIState(coreState != CORE_RUNTIME_ERROR ? UISTATE_INGAME : UISTATE_EXCEPTION);
 	}
 
-	if (errorMessage_.size()) {
+	if (!errorMessage_.empty()) {
 		auto err = GetI18NCategory(I18NCat::ERRORS);
 		auto di = GetI18NCategory(I18NCat::DIALOG);
 		std::string errLoadingFile = GetFriendlyPath(gamePath_) + "\n\n";
@@ -1476,6 +1502,10 @@ void EmuScreen::update() {
 		return;
 	}
 
+	if (g_controlMapper.PollPauseTrigger()) {
+		pauseTrigger_ = true;
+	}
+
 	if (pauseTrigger_) {
 		pauseTrigger_ = false;
 		screenManager()->push(new GamePauseScreen(gamePath_, bootPending_));
@@ -1487,7 +1517,7 @@ void EmuScreen::update() {
 	double now = time_now_d();
 
 	DisplayLayoutConfig &config = g_Config.GetDisplayLayoutConfig(GetDeviceOrientation());
-	g_controlMapper.Update(config, now);
+	g_controlMapper.UpdateConfig(config);
 
 	if (saveStatePreview_ && !bootPending_) {
 		int currentSlot = SaveState::GetCurrentSlot();
@@ -1534,7 +1564,7 @@ bool EmuScreen::checkPowerDown() {
 }
 
 ScreenRenderRole EmuScreen::renderRole(bool isTop) const {
-	auto CanBeBackground = [&]() -> bool {
+	auto CanBeBackground = [this, isTop]() -> bool {
 		if (skipBufferEffects_) {
 			return isTop || (g_Config.bTransparentBackground && ShouldRunBehind());
 		}
@@ -1560,14 +1590,16 @@ ScreenRenderRole EmuScreen::renderRole(bool isTop) const {
 }
 
 void EmuScreen::darken() {
-	if (!screenManager()->topScreen()->wantBrightBackground()) {
-		UIContext &dc = *screenManager()->getUIContext();
-		uint32_t color = GetBackgroundColorWithAlpha(dc);
-		dc.Begin();
-		dc.RebindTexture();
-		dc.FillRect(UI::Drawable(color), dc.GetBounds());
-		dc.Flush();
+	if (screenManager()->topScreen()->wantBrightBackground()) {
+		return;
 	}
+
+	UIContext &dc = *screenManager()->getUIContext();
+	uint32_t color = GetBackgroundColorWithAlpha(dc);
+	dc.Begin();
+	dc.RebindTexture();
+	dc.FillRect(UI::Drawable(color), dc.GetBounds());
+	dc.Flush();
 }
 
 void EmuScreen::HandleFlip() {
@@ -1843,7 +1875,12 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
 
 void EmuScreen::runImDebugger() {
 	if (!lastImguiEnabled_ && g_Config.bShowImDebugger) {
+#if !defined(MOBILE_DEVICE)
+		// On mobile devices (specifically iOS) we don't want to pop the keyboard
+		// on activating imgui. Instead, we should do it when a text edit field in imgui gets focus,
+		// although we'll still have ugly overlap problems.
 		System_NotifyUIEvent(UIEventNotification::TEXT_GOTFOCUS);
+#endif
 		VERBOSE_LOG(Log::System, "activating keyboard");
 	} else if (lastImguiEnabled_ && !g_Config.bShowImDebugger) {
 		System_NotifyUIEvent(UIEventNotification::TEXT_LOSTFOCUS);
@@ -1886,9 +1923,15 @@ void EmuScreen::runImDebugger() {
 
 			// Update keyboard modifiers.
 			auto &io = ImGui::GetIO();
-			io.AddKeyEvent(ImGuiMod_Ctrl, keyCtrlLeft_ || keyCtrlRight_);
-			io.AddKeyEvent(ImGuiMod_Shift, keyShiftLeft_ || keyShiftRight_);
-			io.AddKeyEvent(ImGuiMod_Alt, keyAltLeft_ || keyAltRight_);
+
+			KeyModifier modifiers = NativeGetKeyModifiers();
+
+			const bool keyCtrl = (modifiers & KeyModifier::LCTRL) || (modifiers & KeyModifier::RCTRL);
+			const bool keyShift = (modifiers & KeyModifier::LSHIFT) || (modifiers & KeyModifier::RSHIFT);
+			const bool keyAlt = (modifiers & KeyModifier::LALT) || (modifiers & KeyModifier::RALT);
+			io.AddKeyEvent(ImGuiMod_Ctrl, keyCtrl);
+			io.AddKeyEvent(ImGuiMod_Shift, keyShift);
+			io.AddKeyEvent(ImGuiMod_Alt, keyAlt);
 			// io.AddKeyEvent(ImGuiMod_Super, e.key.super);
 
 			ImGuiID dockID = ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_NoDockingOverCentralNode);
@@ -1910,7 +1953,7 @@ void EmuScreen::runImDebugger() {
 					1.f
 				);
 			}
-			imDebugger_->Frame(currentDebugMIPS, gpuDebug, draw);
+			imDebugger_->Frame(currentDebugMIPS, gpu, draw);
 
 			// Convert to drawlists.
 			ImGui::Render();
@@ -1960,16 +2003,16 @@ void EmuScreen::renderUI() {
 	ctx->Begin();
 
 	if (root_) {
-		UI::LayoutViewHierarchy(*ctx, RootMargins(), root_, false, false);
+		UI::LayoutViewHierarchy(*ctx, RootMargins(), root_, LayoutMode(), UseImmersiveMode());
 		root_->Draw(*ctx);
 	}
 
 	if (PSP_IsInited()) {
 		if ((DebugOverlay)g_Config.iDebugOverlay == DebugOverlay::CONTROL) {
-			DrawControlMapperOverlay(ctx, ctx->GetLayoutBounds(), g_controlMapper);
+			DrawControlMapperOverlay(ctx, GetLayoutBounds(*ctx), g_controlMapper);
 		}
 		if (g_Config.iShowStatusFlags) {
-			DrawFPS(ctx, ctx->GetLayoutBounds());
+			DrawFPS(ctx, GetLayoutBounds(*ctx));
 		}
 	}
 
@@ -2038,8 +2081,8 @@ void EmuScreen::AutoLoadSaveState() {
 	}
 
 	if (g_Config.iAutoLoadSaveState && autoSlot != -1) {
-		SaveState::LoadSlot(gamePrefix, autoSlot, [this, autoSlot](SaveState::Status status, std::string_view message) {
-			AfterSaveStateAction(status, message);
+		SaveState::LoadSlot(gamePrefix, autoSlot, [this, autoSlot](SaveState::Status status, std::string_view message, std::string_view metadata) {
+			ShowMessageAfterSaveStateAction(status, message, metadata);
 			auto sy = GetI18NCategory(I18NCat::SYSTEM);
 			if (status == SaveState::Status::FAILURE) {
 				autoLoadFailed_ = true;

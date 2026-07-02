@@ -223,11 +223,10 @@ void VKRGraphicsPipeline::BlockUntilCompiled() {
 
 void VKRGraphicsPipeline::QueueForDeletion(VulkanContext *vulkan) {
 	// Can't destroy variants here, the pipeline still lives for a while.
-	vulkan->Delete().QueueCallback([](VulkanContext *vulkan, void *p) {
-		VKRGraphicsPipeline *pipeline = (VKRGraphicsPipeline *)p;
-		pipeline->DestroyVariantsInstant(vulkan->GetDevice());
-		delete pipeline;
-	}, this);
+	vulkan->Delete().QueueCallback([this](VulkanContext *vulkan) {
+		this->DestroyVariantsInstant(vulkan->GetDevice());
+		delete this;
+	});
 }
 
 u32 VKRGraphicsPipeline::GetVariantsBitmask() const {
@@ -446,8 +445,8 @@ void VulkanRenderManager::StopThreads() {
 	// Not sure this is a sensible check - should be ok even if not.
 	// _dbg_assert_(steps_.empty());
 
-	if (useRenderThread_) {
-		_dbg_assert_(renderThread_.joinable());
+	_dbg_assert_(renderThread_.joinable());
+	if (useRenderThread_ && renderThread_.joinable()) {
 		// Tell the render thread to quit when it's done.
 		VKRRenderThreadTask *task = new VKRRenderThreadTask(VKRRunType::EXIT);
 		task->frame = vulkan_->GetCurFrame();
@@ -470,10 +469,12 @@ void VulkanRenderManager::StopThreads() {
 	{
 		std::unique_lock<std::mutex> lock(compileQueueMutex_);
 		runCompileThread_ = false;  // Compiler and present thread both look at this bool.
-		_assert_(compileThread_.joinable());
+		_dbg_assert_(compileThread_.joinable());
 		compileCond_.notify_one();
 	}
-	compileThread_.join();
+	if (compileThread_.joinable()) {
+		compileThread_.join();
+	}
 
 	if (presentWaitThread_.joinable()) {
 		presentWaitThread_.join();
@@ -526,6 +527,7 @@ VulkanRenderManager::~VulkanRenderManager() {
 	_dbg_assert_(!runCompileThread_);  // StopThread should already have been called from DestroyBackbuffers.
 
 	vulkan_->WaitUntilQueueIdle();
+	vulkan_->PerformPendingDeletes();  // Some callbacks can contain a reference to the render manager.
 
 	_dbg_assert_(pipelineLayouts_.empty());
 
@@ -975,10 +977,9 @@ void VulkanRenderManager::EndCurRenderStep() {
 		}
 	}
 
-	compileQueueMutex_.lock();
-	if (needsCompile)
+	if (needsCompile) {
 		compileCond_.notify_one();
-	compileQueueMutex_.unlock();
+	}
 	pipelinesToCheck_.clear();
 
 	// We don't do this optimization for very small targets, probably not worth it.
@@ -1631,11 +1632,6 @@ void VulkanRenderManager::Run(VKRRenderThreadTask &task) {
 	}
 	frameData.Submit(vulkan_, FrameSubmitType::Pending, frameDataShared_);
 
-	// Flush descriptors.
-	double descStart = time_now_d();
-	FlushDescriptors(task.frame);
-	frameData.profile.descWriteTime = time_now_d() - descStart;
-
 	if (!frameData.hasMainCommands) {
 		// Effectively resets both main and present command buffers, since they both live in this pool.
 		// We always record main commands first, so we don't need to reset the present command buffer separately.
@@ -1647,6 +1643,12 @@ void VulkanRenderManager::Run(VKRRenderThreadTask &task) {
 		frameData.hasMainCommands = true;
 		_assert_msg_(res == VK_SUCCESS, "vkBeginCommandBuffer failed! result=%s", VulkanResultToString(res));
 	}
+
+	// Flush descriptors.
+	double descStart = time_now_d();
+	int f = task.frame;
+	FlushDescriptors(task.frame);
+	frameData.profile.descWriteTime = time_now_d() - descStart;
 
 	queueRunner_.PreprocessSteps(task.steps);
 	// Likely during shutdown, happens in headless.
@@ -1778,6 +1780,10 @@ VKRPipelineLayout *VulkanRenderManager::CreatePipelineLayout(BindingType *bindin
 			bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 			bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 			break;
+		case BindingType::UNIFORM_BUFFER_COMPUTE:
+			bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+			bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+			break;
 		default:
 			UNREACHABLE();
 			break;
@@ -1810,14 +1816,13 @@ VKRPipelineLayout *VulkanRenderManager::CreatePipelineLayout(BindingType *bindin
 }
 
 void VulkanRenderManager::DestroyPipelineLayout(VKRPipelineLayout *layout) {
-	for (auto iter = pipelineLayouts_.begin(); iter != pipelineLayouts_.end(); iter++) {
-		if (*iter == layout) {
-			pipelineLayouts_.erase(iter);
-			break;
+	vulkan_->Delete().QueueCallback([this, layout](VulkanContext *vulkan) {
+		for (auto iter = pipelineLayouts_.begin(); iter != pipelineLayouts_.end(); iter++) {
+			if (*iter == layout) {
+				pipelineLayouts_.erase(iter);
+				break;
+			}
 		}
-	}
-	vulkan_->Delete().QueueCallback([](VulkanContext *vulkan, void *userdata) {
-		VKRPipelineLayout *layout = (VKRPipelineLayout *)userdata;
 		for (int i = 0; i < VulkanContext::MAX_INFLIGHT_FRAMES; i++) {
 			layout->frameData[i].pool.DestroyImmediately();
 		}
@@ -1825,17 +1830,17 @@ void VulkanRenderManager::DestroyPipelineLayout(VKRPipelineLayout *layout) {
 		vkDestroyDescriptorSetLayout(vulkan->GetDevice(), layout->descriptorSetLayout, nullptr);
 
 		delete layout;
-	}, layout);
+	});
 }
 
 void VulkanRenderManager::FlushDescriptors(int frame) {
-	for (auto iter : pipelineLayouts_) {
+	for (VKRPipelineLayout *iter : pipelineLayouts_) {
 		iter->FlushDescSets(vulkan_, frame, &frameData_[frame].profile);
 	}
 }
 
 void VulkanRenderManager::ResetDescriptorLists(int frame) {
-	for (auto iter : pipelineLayouts_) {
+	for (VKRPipelineLayout *iter : pipelineLayouts_) {
 		VKRPipelineLayout::FrameData &data = iter->frameData[frame];
 
 		data.flushedDescriptors_ = 0;
@@ -1859,7 +1864,7 @@ void VKRPipelineLayout::FlushDescSets(VulkanContext *vulkan, int frame, QueuePro
 
 	pool.Reset();
 
-	VkDescriptorSet setCache[8];
+	VkDescriptorSet setCache[16];
 	VkDescriptorSetLayout layoutsForAlloc[ARRAY_SIZE(setCache)];
 	for (int i = 0; i < ARRAY_SIZE(setCache); i++) {
 		layoutsForAlloc[i] = descriptorSetLayout;
@@ -1960,8 +1965,18 @@ void VKRPipelineLayout::FlushDescSets(VulkanContext *vulkan, int frame, QueuePro
 				_dbg_assert_(data[i].buffer.buffer != VK_NULL_HANDLE);
 				bufferInfo[numBuffers].buffer = data[i].buffer.buffer;
 				bufferInfo[numBuffers].range = data[i].buffer.range;
-				bufferInfo[numBuffers].offset = 0;  // This is supplied by the dynamic offset.
+				bufferInfo[numBuffers].offset = 0;  // This is supplied by the dynamic offset, if available.
 				writes[numWrites].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+				writes[numWrites].pBufferInfo = &bufferInfo[numBuffers];
+				writes[numWrites].pImageInfo = nullptr;
+				numBuffers++;
+				break;
+			case BindingType::UNIFORM_BUFFER_COMPUTE:
+				_dbg_assert_(data[i].buffer.buffer != VK_NULL_HANDLE);
+				bufferInfo[numBuffers].buffer = data[i].buffer.buffer;
+				bufferInfo[numBuffers].range = data[i].buffer.range;
+				bufferInfo[numBuffers].offset = 0;  // This is supplied by the dynamic offset, if available.
+				writes[numWrites].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 				writes[numWrites].pBufferInfo = &bufferInfo[numBuffers];
 				writes[numWrites].pImageInfo = nullptr;
 				numBuffers++;

@@ -13,7 +13,9 @@ Discord: https://discord.gg/5NJB6dD
 
 No BIOS file required to play, PPSSPP is an "HLE" emulator.  Default settings balance good compatibility and speed.
 
-To contribute, see [the development page](https://www.ppsspp.org/docs/development/).  Help testing, investigating, or fixing is always welcome.  See [the list of issues](https://github.com/hrydgard/ppsspp/issues).
+To contribute, see [Introduction to development](https://www.ppsspp.org/docs/development/getting-started). This page also includes our new AI policy.
+
+Help with testing, investigating, or fixing bugs is always welcome.  See [the list of issues](https://github.com/hrydgard/ppsspp/issues).
 
 For the latest source code, see [our GitHub page](https://github.com/hrydgard/ppsspp).
 
@@ -25,8 +27,84 @@ To download fresh development builds for Android, Windows and Mac, [go to the /d
 
 For game compatibility, see [community compatibility feedback](https://report.ppsspp.org/games).
 
+What's new in 1.20.4
+--------------------
+1.20.4 is an unusually big followup release, but given the new multiplayer developments, we need something to cover the longer gap to 1.21.
+During this cycle, I've mostly focused on UX improvements.
+
+- Ad-hoc
+  - Support for "data.json" live status from adhoc relay servers ([#21496], [#21526])
+  - RetroAchievements UI improvements around subsets ([#21536])
+  - Assorted ad-hoc UI improvements ([#21530], [#21510])
+  - Fixes for The Warriors ([#21464]) and Street Riders ([#21460]) in relay mode
+
+- Texture upscaling
+  - Fix old bug causing some textures to get stuck unscales on some hardware when using GPU texture upscaling ([#21533])
+  - Improved performance of MMPX-adv upscaler ([#21555])
+  - NNEDI3 and Spline36 GPU texture scaling ([#21527])
+
+- Rendering fixes
+  - Fix a bug in lens flare occlusion for the Syphon Filter games ([#21511])
+  - Fix a bug in the software renderer ([#21648])
+  
+- Misc UI improvements
+  - Instant type-to-search in game browser ([#21559], [#21565], [#21630])
+  - Fix file picker problems on some Android devices (regression) ([#21614], [#21656])
+  - Fix crash in text edit fields on Mac/iOS ([#21601])
+  - PSP DVD prototypes can now load directly ([#21599], [#21601])
+  - Cheat UI has been cleaned up and supports titles and comments natively ([#21590])
+  - RetroAchievements subset display improvements ([#21536])
+  - Basic deep link support on iOS ([#21615])
+  - Soft keyboard has more symbols ([#21625])
+
+- Other
+  - Fix important (but mostly rare) crash bug affecting games that draw a lot ([#21669])
+  - More plugin zip files can now auto-install ([#21556])
+  - Pause on lost-focus on Linux ([#21517])
+  - Frameskipping no longer breaks analog stick auto-rotation in GoW, however manual rotation still broken ([#21508])
+  - Android: Restore "Landscape Auto" ([#21482]), the "Auto" screen rotation mode now overrides the user rotation lock ([#21507])
+  - Contribution by lrzlin: Loongarch improvements ([#21499], [#21595])
+  - Basic support for extracting ISO from 7zip files ([#21493])
+  - Fix a bug that prevented loading certain texture packs ([#21491])
+  - Fix music looping in Death JR ([#21490])
+  - Hide the save-load indicator in the corner by default ([#21528])
+  - Fix crash in the remote debugger, by Nemoumbra ([#21652])
+  - Fix screenshot cropping bug ([#21665])
+  - mfplat.dll is no longer required on Windows unless you need camera/microphone ([#21660])
+
+What's new in 1.20.3
+--------------------
+
+- Fix issue preventing ad hoc relay servers from working when RetroAchievements are enabled on Windows ([#21420])
+- Some ad hoc UI improvements ([#21432], [#21433])
+- Fix crash/failure setting the background on iOS ([#21409])
+- Fix logging to file ([#21412])
+- Networking settings cleanup ([#21418])
+- Some fixes for assorted rare crashes ([#21422])
+- Fix issues when unpausing using a controller binding ([#21424]), DualSense Edge detection on Windows ([#21426])
+- Fix missing savestate undo button ([#21425])
+- MMPX texture upscaling algorithm has been restored, the new one has been improved ([#21376]) and renamed MMPX Advanced ([#21421])
+- Fix support for custom game config for homebrew apps ([#21434])
+- Improve insets handling on Android ([#21437])
+
+What's new in 1.20.2
+--------------------
+
+- Improved server list for ad hoc multiplayer, dynamically updated and you can now add/remove entries ([#21326], [#21389], [#21351])
+- Fix broken multitouch on iOS with OpenGL ([#21350])
+- Ad hoc relay connection improvements ([#21352])
+- Fix a lot of minor UI issues ([#21400], [#21362])
+- Fix background image selection on Android ~~and iOS~~ ([#21345], [#21384], [#21371])
+- Fix file permission issue on iOS ([#21374])
+- Add a "hold" version of axis swap toggle ([#21357])
+- Fix regression in Gripshift ([#21377])
+- Fix crash on audio device switch on Windows ([#21341])
+- Fix timing glitches in gamepad input on Windows ([#21393])
+- And other assorted fixes.
+
 What's new in 1.20
 ------------------
+
 - User interface
   - New feature: Proper support for Portrait Mode UI - you can now rotate your phone to vertical mode, and things will mostly work fine! ([#21185], [#21044]...)
   - New feature: Separate touch controls and display layout configs for landscape/portrait, new default touch control layout for portrait mode
@@ -42,7 +120,7 @@ What's new in 1.20
   - Soundtrack is working again in Tony Hawk's Project 8 ([#20775])
   - Fix crash in StormBasic homebrew apps ([#20715])
   - Built-in songs in Beats work again ([#20662])
-  - Fix adhoc in Syphon Filter games ([#20642])
+   - Fix adhoc in Syphon Filter games ([#20642])
   - Fix strange cutscene speedups in Power Stone 2 (Power Stone Collection) ([#2124])
   - Work around game bug to help more custom songs play again in GTA LCS ([#20692])
 
@@ -86,8 +164,10 @@ What's new in 1.20
   - iOS
     - Add support for screen rotation
   - Linux
-    - Loongarch improvements by KatyushaScarlet ([#20683], [#20644], [#20599], [#20594]), text rendering improvements ([#21163])
+    - Loongarch improvements by lrzlin ([#20683], [#20644]) and KatyushaScarlet ([#20599], [#20594]), text rendering improvements ([#21163])
     - SDL fullscreen problems fixed ([#21300], more)
+  - UWP
+    - Migrate code base to C++/WinRT ([#21100])
 
 - Debugger
   - ImDebugger improvements ([#20861], [#20779], [#20657], [#20637], [#20550], [#20523])
@@ -184,7 +264,7 @@ What's new in 1.19
 	- As usual a lot of tweaks, perf fixes, and fixes for hangs and crashes ([#20343], [#20332], [#20305], [#20303], [#20299], [#20163], [#20152], [#20143], [#20079], [#20137], [#20374])
 	- Two new color themes ([#20334], [#20335]), related themability fixes ([#19984], [#19995], [#20308])
 	- Improvements and bug fixes in the savedata manager ([#19771], [#20170])
-	- Add "Move to trash" deletion funcionality to multiple platforms ([#20230], [#20261])
+	- Add "Move to trash" deletion functionality to multiple platforms ([#20230], [#20261])
 	- Add ability to take "raw" screenshots of gameplay ([#20029])
 	- More files can be loaded directly from ZIP ([#20243])
 	- Developer Settings are now tabbed for easier access ([#20228])
@@ -401,3 +481,70 @@ See [history.md](history.md).
 [#21042]: https://github.com/hrydgard/ppsspp/issues/21042 "Setting out of game UI confirmation button to O makes both O and X into UI confirmation buttons"
 [#21325]: https://github.com/hrydgard/ppsspp/issues/21325 "Controls: Add a setting for the threshold used to map analog stick inputs to digital buttons"
 [#21306]: https://github.com/hrydgard/ppsspp/issues/21306 "Server list update, add virtual keyboard to PopupTextInputChoice"
+[#21326]: https://github.com/hrydgard/ppsspp/issues/21326 "Adhoc server list: Show metadata"
+[#21389]: https://github.com/hrydgard/ppsspp/issues/21389 "Adhoc server list work, add missing translations"
+[#21351]: https://github.com/hrydgard/ppsspp/issues/21351 "Ad hoc server list refactor: Parse the server list from a json file"
+[#21350]: https://github.com/hrydgard/ppsspp/issues/21350 "Fix multitouch in OpenGL mode on iOS. Oops."
+[#21352]: https://github.com/hrydgard/ppsspp/issues/21352 "Handle adhoc relay connection a bit better"
+[#21400]: https://github.com/hrydgard/ppsspp/issues/21400 "Fix minor UI centering issues and similar"
+[#21362]: https://github.com/hrydgard/ppsspp/issues/21362 "More UI-related fixes"
+[#21345]: https://github.com/hrydgard/ppsspp/issues/21345 "Fix image picker on Android, plus smoother fullscreen startup on Windows"
+[#21384]: https://github.com/hrydgard/ppsspp/issues/21384 "Android background image selection: Scale down selected background image when too large"
+[#21371]: https://github.com/hrydgard/ppsspp/issues/21371 "Various cleanups, iCloud fix"
+[#21374]: https://github.com/hrydgard/ppsspp/issues/21374 "iOS: Preserve permissions to access files across runs"
+[#21357]: https://github.com/hrydgard/ppsspp/issues/21357 "Add a \"hold\" version of the axis swap toggle. Often more convenient."
+[#21377]: https://github.com/hrydgard/ppsspp/issues/21377 "Windows audio fix, Gripshift glitch workaround"
+[#21341]: https://github.com/hrydgard/ppsspp/issues/21341 "Fix crash on audio device switch in Windows"
+[#21393]: https://github.com/hrydgard/ppsspp/issues/21393 "Windows input optimizations"
+[#21100]: https://github.com/hrydgard/ppsspp/issues/21100 "UWP: Migrate from C++/CX to C++/WinRT"
+[#21420]: https://github.com/hrydgard/ppsspp/issues/21420 "Misc: Update aemu_postoffice, add confirmation dialog when creating game configs"
+[#21409]: https://github.com/hrydgard/ppsspp/issues/21409 "Image picker on iOS: Fix crash, use a newer method that opens a lot quicker"
+[#21412]: https://github.com/hrydgard/ppsspp/issues/21412 "Fix logging to file, assorted minor fixes"
+[#21418]: https://github.com/hrydgard/ppsspp/issues/21418 "Networking settings: Some reordering and naming cleanup, link to quickstart guide"
+[#21422]: https://github.com/hrydgard/ppsspp/issues/21422 "Fixes for some rarer crashes from Play reports"
+[#21424]: https://github.com/hrydgard/ppsspp/issues/21424 "Fix control input issues when toggling the pause menu using a controller"
+[#21425]: https://github.com/hrydgard/ppsspp/issues/21425 "Fix accidentally missing undo button on the savestate popup."
+[#21376]: https://github.com/hrydgard/ppsspp/issues/21376 "enhance MMPX algorithm bug fixes and logic optimizations"
+[#21421]: https://github.com/hrydgard/ppsspp/issues/21421 "Split MMPX texture upscaling shader into regular and advanced"
+[#21426]: https://github.com/hrydgard/ppsspp/issues/21426 "Add detection of Dualsense Edge controllers on Windows, update README.md"
+[#21432]: https://github.com/hrydgard/ppsspp/issues/21432 "Rename \"Hostname\" to \"Hostname or IP\" in adhoc server settings"
+[#21433]: https://github.com/hrydgard/ppsspp/issues/21433 "Add a \"quick-edit\" button for the current server host/ip, if it's custom"
+[#21434]: https://github.com/hrydgard/ppsspp/issues/21434 "Fix support for custom game configs for homebrews"
+[#21437]: https://github.com/hrydgard/ppsspp/issues/21437 "Android: Handle inset adjustments on the C++ side, handle them better in the UI."
+[#21496]: https://github.com/hrydgard/ppsspp/issues/21496 "Add live server status for servers supporting data.json"
+[#21526]: https://github.com/hrydgard/ppsspp/issues/21526 "Fix json parsing bugs, add data.json for Relay Brasiliero"
+[#21536]: https://github.com/hrydgard/ppsspp/issues/21536 "Show RA subsets on separate tabs"
+[#21530]: https://github.com/hrydgard/ppsspp/issues/21530 "Pause screen network UI improvements"
+[#21510]: https://github.com/hrydgard/ppsspp/issues/21510 "Chat popup improvements"
+[#21464]: https://github.com/hrydgard/ppsspp/issues/21464 "fix the warriors in relay mode"
+[#21460]: https://github.com/hrydgard/ppsspp/issues/21460 "fix street rider sending pdp packets using wrong pdp dst addresses in relay mode"
+[#21533]: https://github.com/hrydgard/ppsspp/issues/21533 "Fix some textures getting stuck unscaled with GPU texture upscalers"
+[#21555]: https://github.com/hrydgard/ppsspp/issues/21555 "MMPX_adv  algorithm bug fixes and logic optimizations"
+[#21527]: https://github.com/hrydgard/ppsspp/issues/21527 "NNEDI3 and Spline36 GPU texture scaling"
+[#21511]: https://github.com/hrydgard/ppsspp/issues/21511 "Depth raster: Handle triangles properly when backface culling is disabled"
+[#21528]: https://github.com/hrydgard/ppsspp/issues/21528 "Hide the save/load indicator"
+[#21556]: https://github.com/hrydgard/ppsspp/issues/21556 "Fix for auto-installing plugins from zip"
+[#21517]: https://github.com/hrydgard/ppsspp/issues/21517 "Implement pause on lost focus on SDL"
+[#21508]: https://github.com/hrydgard/ppsspp/issues/21508 "Analog stick autorotation now uses game timing"
+[#21482]: https://github.com/hrydgard/ppsspp/issues/21482 "Restore the \"Landscape auto\" orientation mode"
+[#21507]: https://github.com/hrydgard/ppsspp/issues/21507 "Android: Make the \"Auto\" rotation mode override user rotation lock (SENSOR mode)"
+[#21499]: https://github.com/hrydgard/ppsspp/issues/21499 "loongarch: Implement excepetion handler and JIT bug fix"
+[#21493]: https://github.com/hrydgard/ppsspp/issues/21493 "Initial 7z support"
+[#21491]: https://github.com/hrydgard/ppsspp/issues/21491 "IniFile: Disallow section headers from starting at other line offsets than the start"
+[#21490]: https://github.com/hrydgard/ppsspp/issues/21490 "Atrac3: Allow sending 0xFFFFFFFF as data size (Death JR music looping)"
+[#21625]: https://github.com/hrydgard/ppsspp/issues/21625 "Soft keyboard work, checkboxes to enable/disable control input sources"
+[#21615]: https://github.com/hrydgard/ppsspp/issues/21615 "Add deep link support on iOS"
+[#21614]: https://github.com/hrydgard/ppsspp/issues/21614 "Use a proxy activity for Android file pickers, simplify handling of Vblank events"
+[#21601]: https://github.com/hrydgard/ppsspp/issues/21601 "Mac/iOS: Crash and logic fixes for special characters in TextEdit"
+[#21599]: https://github.com/hrydgard/ppsspp/issues/21599 "Support loading PSP prototype DVD-R disc dumps directly"
+[#21590]: https://github.com/hrydgard/ppsspp/issues/21590 "UI improvements: CwCheat titles/comments, easier to scroll tabs"
+[#21559]: https://github.com/hrydgard/ppsspp/issues/21559 "UI: Instant type-to-search in game browsers"
+[#21565]: https://github.com/hrydgard/ppsspp/issues/21565 "Improve search to support full-width chars and to clear search on navigation"
+[#21630]: https://github.com/hrydgard/ppsspp/issues/21630 "Refactor type-to-search code for reuse, use in cheats dialog"
+[#21595]: https://github.com/hrydgard/ppsspp/issues/21595 "loongarch: Fix Jit_WeightsU16Skin in VertexDecoderLoongArch64.cpp"
+[#21648]: https://github.com/hrydgard/ppsspp/issues/21648 "Remove 2 cases for fast path for soft gpu"
+[#21656]: https://github.com/hrydgard/ppsspp/issues/21656 "Fix the java exception reporting for Android file picker errors, fix some search issues"
+[#21669]: https://github.com/hrydgard/ppsspp/issues/21669 "Add \"allocation slack\" to our pushbuffers. Fixes a memory overwrite bug"
+[#21652]: https://github.com/hrydgard/ppsspp/issues/21652 "Critical bug in the remote debugger"
+[#21665]: https://github.com/hrydgard/ppsspp/issues/21665 "Raw screenshot cropping fix"
+[#21660]: https://github.com/hrydgard/ppsspp/issues/21660 "Remove the mfplat.dll hard dependency (now fully dynamic)."

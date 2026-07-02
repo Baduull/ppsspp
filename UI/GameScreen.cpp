@@ -57,6 +57,14 @@
 #include "UI/SavedataScreen.h"
 #include "UI/MiscViews.h"
 
+// This is in an objective-C file.
+#if PPSSPP_PLATFORM(IOS)
+void copyDeepLinkForPath(std::string_view filePath);
+#else
+// dummy
+void copyDeepLinkForPath(std::string_view) {}
+#endif
+
 constexpr GameInfoFlags g_desiredFlags = GameInfoFlags::PARAM_SFO | GameInfoFlags::ICON | GameInfoFlags::PIC0 | GameInfoFlags::PIC1 | GameInfoFlags::ICON1_PMF | GameInfoFlags::UNCOMPRESSED_SIZE | GameInfoFlags::SIZE | GameInfoFlags::SAVEDATA_SIZE;
 
 class PMFView : public UI::InertView {
@@ -339,6 +347,18 @@ void GameScreen::CreateContentViews(UI::ViewGroup *parent) {
 		if (!info_->errorString.empty()) {
 			mainGameInfo->Add(new NoticeView(NoticeLevel::WARN, info_->errorString, ""));
 		}
+
+		// Add information about extra memory (used by some mods).
+		auto keys = info_->GetParamSFO().GetKeys();
+		for (auto &iter : keys) {
+			if (iter == "MEMSIZE") {
+				mainGameInfo->Add(new TextView(iter + StringFromFormat(": %d", info_->GetParamSFO().GetValueInt(iter))))->SetTextSize(UI::TextSize::Small);
+			}
+			// We already show the version elsewhere.
+			// else if (iter == "DISC_VERSION") {
+			// 	mainGameInfo->Add(new TextView(iter + ": " + info_->GetParamSFO().GetValueString(iter)));
+			// }
+		}
 	}
 
 	LinearLayout *infoLayout = new LinearLayout(ORIENT_VERTICAL, new AnchorLayoutParams(10, 200, NONE, NONE));
@@ -500,7 +520,9 @@ void GameScreen::CreateSettingsViews(UI::ViewGroup *rightColumn) {
 	rightColumn->Add(rightColumnItems);
 
 	if (!inGame_ && FileTypeIsPlayable(info_->fileType)) {
-		rightColumnItems->Add(new Choice(ga->T("Play"), ImageID("I_PLAY")))->OnClick.Handle(this, &GameScreen::OnPlay);
+		rightColumnItems->Add(new Choice(ga->T("Play"), ImageID("I_PLAY")))->OnClick.Add([this](UI::EventParams &e) {
+			screenManager()->switchScreen(new EmuScreen(gamePath_));
+		});
 	}
 
 	if (!info_->id.empty() && !inGame_) {
@@ -520,7 +542,9 @@ void GameScreen::CreateSettingsViews(UI::ViewGroup *rightColumn) {
 
 	if (g_Config.bEnableCheats) {
 		auto pa = GetI18NCategory(I18NCat::PAUSE);
-		rightColumnItems->Add(new Choice(pa->T("Cheats"), ImageID("I_CHEAT")))->OnClick.Handle(this, &GameScreen::OnCwCheat);
+		rightColumnItems->Add(new Choice(pa->T("Cheats"), ImageID("I_CHEAT")))->OnClick.Add([this](UI::EventParams &e) {
+			screenManager()->push(new CwCheatScreen(gamePath_));
+		});
 	}
 
 	isHomebrew_ = info_ && info_->region == GameRegion::HOMEBREW;
@@ -548,7 +572,24 @@ void GameScreen::CreateContextMenu(UI::ViewGroup *parent) {
 	// TODO: This is synchronous, bad!
 	if (!inGame_ && g_recentFiles.ContainsFile(gamePath_.ToString())) {
 		Choice *removeButton = parent->Add(new Choice(ga->T("Remove From Recent"), ImageID("I_UNPIN")));
-		removeButton->OnClick.Handle(this, &GameScreen::OnRemoveFromRecent);
+		removeButton->OnClick.Add([this](UI::EventParams &e) {
+			g_recentFiles.Remove(gamePath_.ToString());
+			System_PostUIMessage(UIMessage::GAME_SELECTED, "");
+			// TODO: We should be able to do TriggerFinish here, but unfortunately
+			// the screen manager still considers the popup dialog the current dialog.
+			screenManager()->switchScreen(new MainScreen());
+		});
+	}
+
+	if (System_GetPropertyBool(SYSPROP_HAS_DEEP_LINKS)) {
+		Choice *btnCopyDeepLink = parent->Add(new Choice(di->T("Copy deep link"), ImageID("I_FILE_COPY")));
+		btnCopyDeepLink->OnClick.Add([this](UI::EventParams &e) {
+			auto di = GetI18NCategory(I18NCat::DIALOG);
+			const std::string deepLink = gamePath_.ToString();
+			copyDeepLinkForPath(deepLink);
+			// Success indication. Not worth a translatable string.
+			g_OSD.Show(OSDType::MESSAGE_INFO, ApplySafeSubstitutions(di->T("Copied to clipboard: %1"), deepLink), 0.0f, "copyToClip");
+		});
 	}
 
 	if (info_->saveDataSize) {
@@ -625,18 +666,6 @@ void GameScreen::OnDeleteConfig(UI::EventParams &e) {
 	}));
 }
 
-void GameScreen::OnCwCheat(UI::EventParams &e) {
-	screenManager()->push(new CwCheatScreen(gamePath_));
-}
-
-void GameScreen::OnSwitchBack(UI::EventParams &e) {
-	TriggerFinish(DR_OK);
-}
-
-void GameScreen::OnPlay(UI::EventParams &e) {
-	screenManager()->switchScreen(new EmuScreen(gamePath_));
-}
-
 void GameScreen::OnGameSettings(UI::EventParams &e) {
 	std::shared_ptr<GameInfo> info_ = g_gameInfoCache->GetInfo(NULL, gamePath_, GameInfoFlags::PARAM_SFO);
 	if (info_ && info_->Ready(GameInfoFlags::PARAM_SFO)) {
@@ -693,11 +722,6 @@ void GameScreen::OnDeleteGame(UI::EventParams &e) {
 			}
 		}));
 	}
-}
-
-void GameScreen::OnRemoveFromRecent(UI::EventParams &e) {
-	g_recentFiles.Remove(gamePath_.ToString());
-	screenManager()->switchScreen(new MainScreen());
 }
 
 void GameScreen::OnSetBackground(UI::EventParams &e) {

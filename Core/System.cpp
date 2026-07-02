@@ -66,6 +66,7 @@
 #include "Core/FileSystems/MetaFileSystem.h"
 #include "Core/Loaders.h"
 #include "Core/PSPLoaders.h"
+#include "Core/FileSystems/ISOFileSystem.h"
 #include "Core/ELF/ParamSFO.h"
 #include "Core/SaveState.h"
 #include "Core/Util/RecentFiles.h"
@@ -302,7 +303,20 @@ static bool CPU_Init(FileLoader *fileLoader, IdentifiedFileType type, std::strin
 		if (LoadParamSFOFromDisc()) {
 			InitMemorySizeForGame();
 		}
-		if (type == IdentifiedFileType::PSP_DISC_DIRECTORY) {
+
+		if (type == IdentifiedFileType::PSP_ISO_NP && ((DumpFileType)g_Config.iDumpFileTypes & DumpFileType::PBP_ISO)) {
+			// We have to fetch the block device again, because we want to do this after loading PARAM.SFO.
+			std::string title = SanitizeString(g_paramSFO.GetValueString("TITLE"), StringRestriction::AlphaNumDashUnderscore, 0, 100);
+			std::string filename = title + "-" + g_paramSFO.GetDiscID() + ".iso";
+			Path path = GetSysDirectory(DIRECTORY_DUMP) / filename;
+			IFileSystem *fs = pspFileSystem.GetSystem("umd0:");
+			if (fs) {
+				std::shared_ptr<BlockDevice> bd = fs->GetBlockDevice();
+				if (bd) {
+					DumpBlockDeviceAsync(bd, path, title);
+				}
+			}
+		} else if (type == IdentifiedFileType::PSP_DISC_DIRECTORY) {
 			// Check for existence of ppsspp-index.lst - if it exists, the user likely knows what they're doing.
 			// TODO: Better would be to check that it was loaded successfully.
 			if (!File::Exists(g_CoreParameter.fileToStart / INDEX_FILENAME)) {
@@ -376,7 +390,9 @@ static bool CPU_Init(FileLoader *fileLoader, IdentifiedFileType type, std::strin
 
 	// Here we have read the PARAM.SFO, let's see if we need any compatibility overrides.
 	// Homebrew get fake disc IDs assigned to the global paramSFO, so they shouldn't clash with real games.
-	g_CoreParameter.compat.Load(g_paramSFO.GetDiscID());
+
+	std::string discId = g_paramSFO.GetDiscID();
+	g_CoreParameter.compat.Load(discId);
 	ShowCompatWarnings(g_CoreParameter.compat);
 
 	// This must be before Memory::Init because plugins can override the memory size.
@@ -451,7 +467,7 @@ static bool CPU_Init(FileLoader *fileLoader, IdentifiedFileType type, std::strin
 			dir = ResolvePBPDirectory(Path(dir)).ToString();
 			pspFileSystem.SetStartingDirectory("ms0:/" + dir.substr(pos));
 		}
-		if (!Load_PSP_ELF_PBP(fileLoader, errorString)) {
+		if (!Load_PSP_ELF_PBP(fileLoader, discId, errorString)) {
 			return false;
 		}
 		break;
@@ -462,7 +478,7 @@ static bool CPU_Init(FileLoader *fileLoader, IdentifiedFileType type, std::strin
 	case IdentifiedFileType::PSP_ELF:
 	{
 		INFO_LOG(Log::Loader, "File is an ELF or loose PBP %s", fileLoader->GetPath().c_str());
-		if (!Load_PSP_ELF_PBP(fileLoader, errorString)) {
+		if (!Load_PSP_ELF_PBP(fileLoader, discId, errorString)) {
 			ERROR_LOG(Log::Loader, "Failed to load ELF or loose PBP: %s", errorString->c_str());
 			return false;
 		}
@@ -728,9 +744,6 @@ BootState PollBootState() {
 }
 
 void PSP_Shutdown(bool success) {
-	// Reduce the risk for weird races with the Windows GE debugger.
-	gpuDebug = nullptr;
-
 	// Do nothing if we never inited.
 	if (g_bootState == BootState::Off) {
 		ERROR_LOG(Log::Loader, "Unexpected PSP_Shutdown");

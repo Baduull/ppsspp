@@ -5,6 +5,7 @@
 #pragma once
 
 #include <set>
+#include <unordered_set>
 
 #include "Common/CommonTypes.h"
 #include "Common/Input/InputState.h"
@@ -63,11 +64,12 @@ private:
 	HIDControllerType subType_{};
 	HANDLE controller_;
 	std::string name_;
+	std::unordered_set<std::wstring> ignoreHidDevicePaths_;
 	int pad_ = 0;
 	int pollCount_ = 0;
 	int inReportSize_ = 0;
 	int outReportSize_ = 0;
 	enum {
-		POLL_FREQ = 283,  // a prime number.
+		POLL_FREQ = 709,  // a prime number.
 	};
 };

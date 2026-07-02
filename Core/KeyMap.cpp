@@ -115,6 +115,19 @@ bool HasMainButtonMapping(const std::vector<InputMapping> &mappings) {
 	return false;
 }
 
+static void RemoveKeyboardLetterKeys(std::vector<InputMapping> &mappings) {
+	std::vector<InputMapping> result;
+	for (auto &mapping : mappings) {
+		if (mapping.deviceId == DEVICE_ID_KEYBOARD) {
+			if (mapping.keyCode >= NKCODE_A && mapping.keyCode <= NKCODE_Z) {
+				continue;
+			}
+		}
+		result.push_back(mapping);
+	}
+	mappings = result;
+}
+
 // TODO: This is such a mess...
 void UpdateNativeMenuKeys() {
 	std::vector<InputMapping> confirmKeys, cancelKeys;
@@ -193,6 +206,13 @@ void UpdateNativeMenuKeys() {
 		INFO_LOG(Log::System, "Cancel key: %s", MultiInputMapping(cancelKeys[i]).ToVisualString().c_str());
 	}
 	*/
+
+	// Remove keyboard letter keys from some arrays, as they will collide with text input for instant search.
+	RemoveKeyboardLetterKeys(tabLeft);
+	RemoveKeyboardLetterKeys(tabRight);
+	RemoveKeyboardLetterKeys(confirmKeys);
+	RemoveKeyboardLetterKeys(cancelKeys);
+	RemoveKeyboardLetterKeys(infoKeys);
 
 	SetDPadKeys(upKeys, downKeys, leftKeys, rightKeys);
 	SetConfirmCancelKeys(confirmKeys, cancelKeys);
@@ -460,7 +480,8 @@ const KeyMap_IntStrPair psp_button_names[] = {
 	{VIRTKEY_ANALOG_ROTATE_CCW, "Rotate Analog (CCW)"},
 	{VIRTKEY_ANALOG_LIGHTLY, "Analog limiter"},
 	{VIRTKEY_RAPID_FIRE, "RapidFire"},
-	{VIRTKEY_AXIS_SWAP, "AxisSwap"},
+	{VIRTKEY_AXIS_SWAP_HOLD, "Axis swap (hold)"},
+	{VIRTKEY_AXIS_SWAP_TOGGLE, "Axis swap (toggle)"},
 
 	{VIRTKEY_FASTFORWARD, "Fast-forward"},
 	{VIRTKEY_PAUSE, "Pause"},

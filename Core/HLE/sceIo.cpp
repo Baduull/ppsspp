@@ -598,7 +598,7 @@ static void __IoWakeManager(CoreLifecycle stage) {
 	}
 }
 
-static void __IoVblank() {
+void __IoVblank() {
 	// We update memstick status here just to avoid possible thread safety issues.
 	// It doesn't actually need to be on a vblank.
 
@@ -699,7 +699,6 @@ void __IoInit() {
 	MemoryStick_Init();
 	lastMemStickState = MemoryStick_State();
 	lastMemStickFatState = MemoryStick_FatState();
-	__DisplayListenVblank(__IoVblank);
 }
 
 void __IoDoState(PointerWrap &p) {
@@ -2416,6 +2415,11 @@ public:
 };
 
 static u32 sceIoDopen(const char *path) {
+	if (!path) {
+		// Not tested on the PSP. Matches sceIoOpen.
+		return hleLogError(Log::sceIo, SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND, "nullptr file not found");
+	}
+
 	double startTime = time_now_d();
 
 	bool listingExists = false;

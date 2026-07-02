@@ -10,25 +10,12 @@
 
 using namespace Lin;
 
+enum class ViewLayoutMode;
+
 class I18NCategory;
 namespace Draw {
 	class DrawContext;
 }
-
-enum class QueuedEventType : u8 {
-	KEY,
-	AXIS,
-	TOUCH,
-};
-
-struct QueuedEvent {
-	QueuedEventType type;
-	union {
-		TouchInput touch;
-		KeyInput key;
-		AxisInput axis;
-	};
-};
 
 class UIScreen : public Screen {
 public:
@@ -40,13 +27,9 @@ public:
 	void deviceLost() override;
 	void deviceRestored(Draw::DrawContext *draw) override;
 
-	virtual void touch(const TouchInput &touch);
-	virtual bool key(const KeyInput &key);
-	virtual void axis(const AxisInput &axis);
-
-	bool UnsyncTouch(const TouchInput &touch) override;
-	bool UnsyncKey(const KeyInput &key) override;
-	void UnsyncAxis(const AxisInput *axes, size_t count) override;
+	bool touch(const TouchInput &touch) override;
+	bool key(const KeyInput &key) override;
+	void axis(const AxisInput &axis) override;
 
 	TouchInput transformTouch(const TouchInput &touch) override;
 
@@ -59,19 +42,27 @@ public:
 
 	virtual UI::Margins RootMargins() const { return UI::Margins(0); }
 
+	virtual void focusChanged(ScreenFocusChange focusChange) override {
+		Screen::focusChanged(focusChange);
+	}
+
+	virtual bool AllowKeyboardNavigation() const { return true; }
+
 protected:
 	virtual void CreateViews() = 0;
+
+	Bounds GetLayoutBounds(UIContext &dc) const;
 
 	void RecreateViews() override { recreateViews_ = true; }
 	DeviceOrientation GetDeviceOrientation() const;
 	bool IsOnTop() const;
+	virtual ViewLayoutMode LayoutMode() const { return ViewLayoutMode::ApplyInsets; }
+	virtual bool UseImmersiveMode() const { return false; }
 
 	UI::ViewGroup *root_ = nullptr;
 	Vec3 translation_ = Vec3(0.0f);
 	Vec3 scale_ = Vec3(1.0f);
 	float alpha_ = 1.0f;
-	bool ignoreInsets_ = false;
-	bool ignoreBottomInset_ = false;
 	bool ignoreInput_ = false;
 
 protected:
@@ -82,18 +73,21 @@ protected:
 
 	bool recreateViews_ = true;
 	DeviceOrientation lastOrientation_ = DeviceOrientation::Landscape;
-
-private:
-	std::mutex eventQueueLock_;
-	std::deque<QueuedEvent> eventQueue_;
 };
 
 class UIDialogScreen : public UIScreen {
 public:
 	UIDialogScreen() : UIScreen(), finished_(false) {}
+	~UIDialogScreen() override;
+	void update() override {
+		UIScreen::update();
+		firstFrame_ = false;
+	}
 	bool key(const KeyInput &key) override;
 	void sendMessage(UIMessage message, const char *value) override;
 
+protected:
+	bool firstFrame_ = true;  // Since back button can toggle this screen, we need to make sure we don't immediately pop it on the first frame.
 private:
 	bool finished_;
 };
