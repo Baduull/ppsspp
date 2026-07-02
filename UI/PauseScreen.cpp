@@ -77,6 +77,27 @@ static void AfterSaveStateAction(SaveState::Status status, std::string_view mess
 	}
 }
 
+class PatchSettingsScreen : public UI::PopupScreen {
+public:
+	PatchSettingsScreen(std::string_view title) : UI::PopupScreen(title) {}
+
+protected:
+	bool FillVertical() const override { return false; }
+	UI::Size PopupWidth() const override { return 500; }
+
+	void CreatePopupContents(UI::ViewGroup *parent) override {
+		using namespace UI;
+		auto gr = GetI18NCategory(I18NCat::GRAPHICS);
+		auto di = GetI18NCategory(I18NCat::DIALOG);
+
+		parent->Add(new ItemHeader(gr->T("Patch")));
+		parent->Add(new TextView(gr->T("God Eater 2 bloom reduction"), FLAG_DYNAMIC_SPACING));
+		parent->Add(new PopupSliderChoice(&g_Config.iGE2BloomReductionPercent, 0, 100, 60, gr->T("Bloom reduction"), screenManager(), "%"))
+			->SetFormat("%d%%")
+			->SetLiveUpdate(true);
+	}
+};
+
 class ScreenshotViewScreen : public UI::PopupScreen {
 public:
 	ScreenshotViewScreen(const Path &screenshotFilename, std::string_view saveStatePrefix, std::string_view title, int slot, Path gamePath)
@@ -658,6 +679,12 @@ void GamePauseScreen::CreateViews() {
 		rightColumnItems->Add(new Choice(pa->T("Cheats"), ImageID("I_CHEAT")))->OnClick.Add([this](UI::EventParams &e) {
 			screenManager()->push(new CwCheatScreen(gamePath_));
 		});
+
+		Choice *patchChoice = rightColumnItems->Add(new Choice(gr->T("Patch"), ImageID("I_DISPLAY")));
+		patchChoice->OnClick.Add([this, gr](UI::EventParams &) {
+			screenManager()->push(new PatchSettingsScreen(gr->T("Patch")));
+		});
+		patchChoice->SetEnabled(PSP_CoreParameter().compat.flags().ReduceBloomStrength && !g_Config.bSkipBufferEffects);
 	}
 
 	// TODO, also might be nice to show overall compat rating here?
