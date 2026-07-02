@@ -81,6 +81,8 @@ class PatchSettingsScreen : public UI::PopupScreen {
 public:
 	PatchSettingsScreen(std::string_view title) : UI::PopupScreen(title) {}
 
+	const char *tag() const override { return "PatchSettings"; }
+
 protected:
 	bool FillVertical() const override { return false; }
 	UI::Size PopupWidth() const override { return 500; }
@@ -88,13 +90,13 @@ protected:
 	void CreatePopupContents(UI::ViewGroup *parent) override {
 		using namespace UI;
 		auto gr = GetI18NCategory(I18NCat::GRAPHICS);
-		auto di = GetI18NCategory(I18NCat::DIALOG);
 
 		parent->Add(new ItemHeader(gr->T("Patch")));
-		parent->Add(new TextView(gr->T("God Eater 2 bloom reduction"), FLAG_DYNAMIC_SPACING));
-		parent->Add(new PopupSliderChoice(&g_Config.iGE2BloomReductionPercent, 0, 100, 60, gr->T("Bloom reduction"), screenManager(), "%"))
-			->SetFormat("%d%%")
-			->SetLiveUpdate(true);
+		parent->Add(new TextView(gr->T("God Eater 2 bloom reduction"), ALIGN_LEFT, false));
+		PopupSliderChoice *slider = new PopupSliderChoice(&g_Config.iGE2BloomReductionPercent, 0, 100, 60, gr->T("Bloom reduction"), screenManager(), "%");
+		slider->SetFormat("%d%%");
+		slider->SetLiveUpdate(true);
+		parent->Add(slider);
 	}
 };
 
