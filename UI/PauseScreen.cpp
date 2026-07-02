@@ -77,27 +77,49 @@ static void AfterSaveStateAction(SaveState::Status status, std::string_view mess
 	}
 }
 
-class PatchSettingsScreen : public UI::PopupScreen {
+class PatchSettingsScreen : public UIBaseScreen {
 public:
-	PatchSettingsScreen(std::string_view title) : UI::PopupScreen(title) {}
+	PatchSettingsScreen(const Path &filename) : UIBaseScreen(), gamePath_(filename) {}
 
-	const char *tag() const override { return "PatchSettings"; }
-
-protected:
-	bool FillVertical() const override { return false; }
-	UI::Size PopupWidth() const override { return 500; }
-
-	void CreatePopupContents(UI::ViewGroup *parent) override {
+	void CreateViews() override {
 		using namespace UI;
+
+		auto di = GetI18NCategory(I18NCat::DIALOG);
 		auto gr = GetI18NCategory(I18NCat::GRAPHICS);
 
-		parent->Add(new ItemHeader(gr->T("Patch")));
-		parent->Add(new TextView(gr->T("God Eater 2 bloom reduction"), ALIGN_LEFT, false));
+		root_ = new LinearLayout(ORIENT_VERTICAL, new LayoutParams(FILL_PARENT, FILL_PARENT));
+		root_->SetExclusiveTouch(true);
+
+		root_->Add(new PaneTitleBar(gamePath_, gr->T("Patch"), "", new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
+
+		ScrollView *scroll = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, FILL_PARENT));
+		LinearLayout *content = new LinearLayout(ORIENT_VERTICAL);
+		content->padding.SetAll(8.0f);
+		content->SetSpacing(0.0f);
+		scroll->Add(content);
+		root_->Add(scroll);
+
+		Choice *back = new Choice(di->T("Back"), ImageID("I_NAVIGATE_BACK"));
+		back->OnClick.Handle<UIScreen>(this, &UIScreen::OnBack);
+		content->Add(back);
+
+		content->Add(new ItemHeader(gr->T("Bloom reduction")));
 		PopupSliderChoice *slider = new PopupSliderChoice(&g_Config.iGE2BloomReductionPercent, 0, 100, 60, gr->T("Bloom reduction"), screenManager(), "%");
 		slider->SetFormat("%d%%");
 		slider->SetLiveUpdate(true);
-		parent->Add(slider);
+		slider->SetHasDropShadow(false);
+		content->Add(slider);
+
+		Drawable backgroundWithAlpha(GetBackgroundColorWithAlpha(*screenManager()->getUIContext()));
+		content->SetBG(backgroundWithAlpha);
 	}
+
+	bool wantBrightBackground() const override { return true; }
+
+	const char *tag() const override { return "PatchSettings"; }
+
+private:
+	Path gamePath_;
 };
 
 class ScreenshotViewScreen : public UI::PopupScreen {
@@ -683,8 +705,8 @@ void GamePauseScreen::CreateViews() {
 		});
 
 		Choice *patchChoice = rightColumnItems->Add(new Choice(gr->T("Patch"), ImageID("I_DISPLAY")));
-		patchChoice->OnClick.Add([this, gr](UI::EventParams &) {
-			screenManager()->push(new PatchSettingsScreen(gr->T("Patch")));
+		patchChoice->OnClick.Add([this](UI::EventParams &) {
+			screenManager()->push(new PatchSettingsScreen(gamePath_));
 		});
 		patchChoice->SetEnabled(PSP_CoreParameter().compat.flags().ReduceBloomStrength && !g_Config.bSkipBufferEffects);
 	}
