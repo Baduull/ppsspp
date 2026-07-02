@@ -33,7 +33,7 @@ void Init() {
 	// WSA does its own internal reference counting, no need to keep track of if we inited or not.
 	WSADATA wsaData{};
 	if (FAILED(WSAStartup(MAKEWORD(2, 2), &wsaData))) {
-		ERROR_LOG(Log::sceNet, "WSAStartup failed");
+		ERROR_LOG(Log::Net, "WSAStartup failed");
 	} else {
 		g_wsaInitialized = true;
 	}
@@ -59,10 +59,6 @@ void Shutdown() {
 #endif
 }
 
-// This checks whether a TCP connection to host : port can be established within a given timeout.
-// It does this by attempting a new, non - blocking TCP connect() and waiting for it to succeed or time out.
-// The socket is closed immediately after the check.
-// It does not inspect or detect existing connections from other applications; it only tests reachability by making its own connection attempt.
 bool HostPortExists(const std::string &host, int port, int timeout_ms) {
 	if (host.empty() || (port <= 0 || port > 65535) || timeout_ms < 0) return false;
 
@@ -98,6 +94,11 @@ bool HostPortExists(const std::string &host, int port, int timeout_ms) {
 		unsigned long mode = 1;
 		ioctlsocket((SOCKET)sockfd, FIONBIO, &mode);
 #else
+		// On non-Windows, check if fd is too large for select()
+		if (sockfd >= FD_SETSIZE) {
+			close(sockfd);
+			continue;
+		}
 		int flags = fcntl(sockfd, F_GETFL, 0);
 		if (flags == -1) flags = 0;
 		fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
@@ -249,8 +250,7 @@ bool DNSResolve(const std::string &host, const std::string &service, addrinfo **
 	return true;
 }
 
-void DNSResolveFree(addrinfo *res)
-{
+void DNSResolveFree(addrinfo *res) {
 	if (res)
 		freeaddrinfo(res);
 }
@@ -259,7 +259,7 @@ bool GetLocalIP4List(std::vector<std::string> &IP4s) {
 	char ipstr[INET6_ADDRSTRLEN]; // We use IPv6 length since it's longer than IPv4
 // getifaddrs first appeared in glibc 2.3, On Android officially supported since __ANDROID_API__ >= 24
 #if defined(_IFADDRS_H_) || (__GLIBC__ > 2) || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 3) || (__ANDROID_API__ >= 24)
-	INFO_LOG(Log::sceNet, "GetIPList from getifaddrs");
+	INFO_LOG(Log::Net, "GetIPList from getifaddrs");
 	struct ifaddrs* ifAddrStruct = NULL;
 	struct ifaddrs* ifa = NULL;
 
@@ -287,7 +287,7 @@ bool GetLocalIP4List(std::vector<std::string> &IP4s) {
 		return true;
 	}
 #elif defined(SIOCGIFCONF) // Better detection on Linux/UNIX/MacOS/some Android
-	INFO_LOG(Log::IO, "GetIPList from SIOCGIFCONF");
+	INFO_LOG(Log::Net, "GetIPList from SIOCGIFCONF");
 	static struct ifreq ifreqs[32];
 	struct ifconf ifc{};
 	ifc.ifc_req = ifreqs;
@@ -295,13 +295,13 @@ bool GetLocalIP4List(std::vector<std::string> &IP4s) {
 
 	int sd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (sd < 0) {
-		ERROR_LOG(Log::IO, "GetIPList failed to create socket (result = %i, errno = %i)", sd, socket_errno);
+		ERROR_LOG(Log::Net, "GetIPList failed to create socket (result = %i, errno = %i)", sd, socket_errno);
 		return false;
 	}
 
 	int r = ioctl(sd, SIOCGIFCONF, (char*)&ifc);
 	if (r != 0) {
-		ERROR_LOG(Log::IO, "GetIPList failed ioctl/SIOCGIFCONF (result = %i, errno = %i)", r, socket_errno);
+		ERROR_LOG(Log::Net, "GetIPList failed ioctl/SIOCGIFCONF (result = %i, errno = %i)", r, socket_errno);
 		return false;
 	}
 
@@ -317,7 +317,7 @@ bool GetLocalIP4List(std::vector<std::string> &IP4s) {
 		r = ioctl(sd, SIOCGIFADDR, item);
 		if (r != 0)
 		{
-			ERROR_LOG(Log::IO, "GetIPList failed ioctl/SIOCGIFADDR (i = %i, result = %i, errno = %i)", i, r, socket_errno);
+			ERROR_LOG(Log::Net, "GetIPList failed ioctl/SIOCGIFADDR (i = %i, result = %i, errno = %i)", i, r, socket_errno);
 		}
 
 		if (ifreqs[i].ifr_addr.sa_family == AF_INET) {
@@ -337,7 +337,7 @@ bool GetLocalIP4List(std::vector<std::string> &IP4s) {
 	close(sd);
 	return true;
 #else // Fallback to POSIX/Cross-platform way but may not work well on Linux (ie. only shows 127.0.0.1)
-	DEBUG_LOG(Log::IO, "GetIPList from fallback method");
+	DEBUG_LOG(Log::Net, "GetIPList from fallback method");
 	struct addrinfo hints, * res, * p;
 	memset(&hints, 0, sizeof hints);
 	hints.ai_family = AF_UNSPEC; // AF_INET or AF_INET6 to force version
@@ -493,13 +493,13 @@ static bool parse_dns_response(unsigned char *buffer, size_t response_len, uint3
 	DNSHeader *dns = (DNSHeader *)buffer;
 	unsigned char *ptr = buffer + sizeof(struct DNSHeader);
 
-	DEBUG_LOG(Log::sceNet, "DNS Response:");
-	DEBUG_LOG(Log::sceNet, "ID: 0x%x", ntohs(dns->id));
-	DEBUG_LOG(Log::sceNet, "Flags: 0x%x", ntohs(dns->flags));
-	DEBUG_LOG(Log::sceNet, "Questions: %d", ntohs(dns->q_count));
-	DEBUG_LOG(Log::sceNet, "Answers: %d", ntohs(dns->ans_count));
-	DEBUG_LOG(Log::sceNet, "Authority Records: %d", ntohs(dns->auth_count));
-	DEBUG_LOG(Log::sceNet, "Additional Records: %d", ntohs(dns->add_count));
+	DEBUG_LOG(Log::Net, "DNS Response:");
+	DEBUG_LOG(Log::Net, "ID: 0x%x", ntohs(dns->id));
+	DEBUG_LOG(Log::Net, "Flags: 0x%x", ntohs(dns->flags));
+	DEBUG_LOG(Log::Net, "Questions: %d", ntohs(dns->q_count));
+	DEBUG_LOG(Log::Net, "Answers: %d", ntohs(dns->ans_count));
+	DEBUG_LOG(Log::Net, "Authority Records: %d", ntohs(dns->auth_count));
+	DEBUG_LOG(Log::Net, "Additional Records: %d", ntohs(dns->add_count));
 
 	// Skip over the question section
 	const int q_count = ntohs(dns->q_count);
@@ -515,7 +515,7 @@ static bool parse_dns_response(unsigned char *buffer, size_t response_len, uint3
 	// Parse the answer section
 	const int ans_count = ntohs(dns->ans_count);
 	for (int i = 0; i < ans_count; i++) {
-		DEBUG_LOG(Log::sceNet, "Answer %d:\n", i + 1);
+		DEBUG_LOG(Log::Net, "Answer %d:\n", i + 1);
 
 		// Skip the name (can be a pointer or a sequence)
 		if ((*ptr & 0xC0) == 0xC0) {
@@ -535,16 +535,16 @@ static bool parse_dns_response(unsigned char *buffer, size_t response_len, uint3
 		uint16_t data_len = ntohs(*((uint16_t *)ptr));
 		ptr += 2;
 
-		DEBUG_LOG(Log::sceNet, "  Type: %d", type);
-		DEBUG_LOG(Log::sceNet, "  Class: %d", clazz);
-		DEBUG_LOG(Log::sceNet, "  TTL: %u", ttl);
-		DEBUG_LOG(Log::sceNet, "  Data length: %d", (int)data_len);
+		DEBUG_LOG(Log::Net, "  Type: %d", type);
+		DEBUG_LOG(Log::Net, "  Class: %d", clazz);
+		DEBUG_LOG(Log::Net, "  TTL: %u", ttl);
+		DEBUG_LOG(Log::Net, "  Data length: %d", (int)data_len);
 
 		if (type == DNS_QUERY_TYPE_A && data_len == 4) {
 			// IPv4 address
 			char ip[INET_ADDRSTRLEN];
 			inet_ntop(AF_INET, ptr, ip, sizeof(ip));
-			DEBUG_LOG(Log::sceNet, "  IPV4 Address: %s", ip);
+			DEBUG_LOG(Log::Net, "  IPV4 Address: %s", ip);
 			memcpy(output, ptr, 4);
 			// Skipping further responses.
 			return true;
@@ -566,12 +566,12 @@ static std::map<std::string, DNSCacheEntry> g_directDNSCache;
 
 bool DirectDNSLookupIPV4(const char *dns_server_ip, const char *domain, uint32_t *ipv4_addr) {
 	if (!strlen(dns_server_ip)) {
-		WARN_LOG(Log::sceNet, "Direct lookup: DNS server not specified");
+		WARN_LOG(Log::Net, "Direct lookup: DNS server not specified");
 		return false;
 	}
 
 	if (!strlen(domain)) {
-		ERROR_LOG(Log::sceNet, "Direct lookup: Can't look up an empty domain");
+		ERROR_LOG(Log::Net, "Direct lookup: Can't look up an empty domain");
 		return false;
 	}
 
@@ -579,7 +579,7 @@ bool DirectDNSLookupIPV4(const char *dns_server_ip, const char *domain, uint32_t
 
 	auto iter = g_directDNSCache.find(key);
 	if (iter != g_directDNSCache.end()) {
-		INFO_LOG(Log::sceNet, "Returning cached response from direct DNS request for '%s' to DNS server '%s", domain, dns_server_ip);
+		INFO_LOG(Log::Net, "Returning cached response from direct DNS request for '%s' to DNS server '%s", domain, dns_server_ip);
 		*ipv4_addr = iter->second.ipv4Address;
 		return true;
 	}
@@ -587,8 +587,8 @@ bool DirectDNSLookupIPV4(const char *dns_server_ip, const char *domain, uint32_t
 	SOCKET sockfd = socket(AF_INET, SOCK_DGRAM, 0);
 	// Create UDP socket
 	if (sockfd < 0) {
-		ERROR_LOG(Log::sceNet, "Socket creation for direct DNS failed");
-		return 1;
+		ERROR_LOG(Log::Net, "Socket creation for direct DNS failed");
+		return false;
 	}
 
 	struct sockaddr_in server_addr{};
@@ -596,9 +596,9 @@ bool DirectDNSLookupIPV4(const char *dns_server_ip, const char *domain, uint32_t
 	server_addr.sin_port = htons(DNS_PORT);
 
 	if (net::inet_pton(AF_INET, dns_server_ip, &server_addr.sin_addr) <= 0) {
-		ERROR_LOG(Log::sceNet,"Invalid DNS server IP address %s", dns_server_ip);
+		ERROR_LOG(Log::Net,"Invalid DNS server IP address %s", dns_server_ip);
 		closesocket(sockfd);
-		return 1;
+		return false;
 	}
 
 	// Build DNS query
@@ -618,18 +618,18 @@ bool DirectDNSLookupIPV4(const char *dns_server_ip, const char *domain, uint32_t
 	// Send DNS query
 	size_t query_len = sizeof(DNSHeader) + (qinfo - buffer) + 4;
 	if (sendto(sockfd, (const char *)buffer, (int)query_len, 0, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-		ERROR_LOG(Log::sceNet, "Failed to send DNS query");
+		ERROR_LOG(Log::Net, "Failed to send DNS query");
 		closesocket(sockfd);
-		return 1;
+		return false;
 	}
 
 	// Receive DNS response
 	socklen_t server_len = sizeof(server_addr);
 	size_t response_len;
 	if ((response_len = recvfrom(sockfd, (char *)buffer, sizeof(buffer), 0, (struct sockaddr *)&server_addr, &server_len)) < 0) {
-		ERROR_LOG(Log::sceNet, "Failed to receive DNS response");
+		ERROR_LOG(Log::Net, "Failed to receive DNS response");
 		closesocket(sockfd);
-		return 1;
+		return false;
 	}
 
 	// Close socket

@@ -18,6 +18,7 @@
 
 enum SystemPermission {
 	SYSTEM_PERMISSION_STORAGE,
+	SYSTEM_PERMISSION_LOCAL_NETWORK,
 };
 
 enum PermissionStatus {
@@ -61,6 +62,7 @@ void System_LaunchUrl(LaunchUrlType urlType, std::string_view url);
 enum class UIEventNotification {
 	MENU_RETURN,
 	POPUP_CLOSED,
+	DIALOG_CLOSED,
 	TEXT_GOTFOCUS,
 	TEXT_LOSTFOCUS,
 };
@@ -166,6 +168,7 @@ enum SystemProperty {
 	SYSPROP_HAS_LOGIN_DIALOG,
 	SYSPROP_HAS_TEXT_CLIPBOARD,
 	SYSPROP_HAS_TEXT_INPUT_DIALOG,  // Indicates that System_InputBoxGetString is available.
+	SYSPROP_HAS_DEEP_LINKS,  // ios-style deep links
 
 	SYSPROP_CAN_CREATE_SHORTCUT,
 	SYSPROP_CAN_SHOW_FILE,
@@ -189,6 +192,7 @@ enum SystemProperty {
 	SYSPROP_DISPLAY_SAFE_INSET_RIGHT,
 	SYSPROP_DISPLAY_SAFE_INSET_TOP,
 	SYSPROP_DISPLAY_SAFE_INSET_BOTTOM,
+	SYSPROP_DISPLAY_HAS_CAMERA_CUTOUT,
 
 	SYSPROP_DEVICE_TYPE,
 	SYSPROP_APP_GOLD,  // To avoid having #ifdef GOLD other than in main.cpp and similar.
@@ -238,6 +242,8 @@ enum SystemProperty {
 	SYSPROP_USE_IAP,
 	SYSPROP_USE_APP_STORE,
 	SYSPROP_SUPPORTS_SHARE_TEXT,
+
+	SYSPROP_CAN_RESTRICT_ORIENTATION,
 
 	SYSPROP_INSTALLER_NAME,  // Useful on Android to check if we were installed from the play store.
 };
@@ -304,6 +310,7 @@ enum class UIMessage {
 	RESTART_GRAPHICS,
 	RECENT_FILES_CHANGED,
 	SAVE_FRAME_DUMP,
+	ADHOC_SERVER_LIST_CHANGED,
 };
 
 std::string System_GetProperty(SystemProperty prop);

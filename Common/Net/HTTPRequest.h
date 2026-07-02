@@ -23,10 +23,15 @@ enum class RequestFlags {
 };
 ENUM_CLASS_BITOPS(RequestFlags);
 
+class Request;
+
+// Note that these are executed both on success and failure, so need to handle both by inspecting the Request.
+using RequestCompletionCallback = std::function<void(Request &)>;
+
 // Abstract request.
 class Request {
 public:
-	Request(RequestMethod method, std::string_view url, std::string_view name, bool *cancelled, RequestFlags mode);
+	Request(RequestMethod method, std::string_view url, std::string_view name, const Path &outFile, bool *cancelled, RequestFlags mode);
 	virtual ~Request() {}
 
 	void SetAccept(const char *mime) {
@@ -39,13 +44,14 @@ public:
 
 	// NOTE: Completion callbacks (which these are) are deferred until RunCallback is called. This is so that
 	// the call will end up on the thread that calls g_DownloadManager.Update().
-	void SetCallback(std::function<void(Request &)> callback) {
+	void SetCallback(RequestCompletionCallback callback) {
 		callback_ = callback;
 	}
 	void RunCallback() {
 		if (callback_) {
 			callback_(*this);
 		}
+		hasRunCallback_ = true;
 	}
 
 	virtual void Start() = 0;
@@ -53,6 +59,8 @@ public:
 
 	virtual bool Done() = 0;
 	virtual bool Failed() const = 0;
+
+	virtual bool HasRunCallback() { return Done() && hasRunCallback_; }
 
 	// Returns 1.0 when done. That one value can be compared exactly - or just use Done().
 	float Progress() const { return progress_.progress; }
@@ -87,16 +95,15 @@ protected:
 	Buffer buffer_;
 	bool cancelled_ = false;
 	int resultCode_ = 0;
+	bool hasRunCallback_ = false;
 	std::vector<std::string> responseHeaders_;
 
 	net::RequestProgress progress_;
 	RequestFlags flags_;
 
 private:
-	std::function<void(Request &)> callback_;
+	RequestCompletionCallback callback_;
 };
-
-using std::shared_ptr;
 
 class RequestManager {
 public:
@@ -105,22 +112,14 @@ public:
 	}
 
 	// NOTE: This is the only version that supports the cache flag (for now).
-	std::shared_ptr<Request> StartDownload(std::string_view url, const Path &outfile, RequestFlags flags, const char *acceptMime = nullptr);
-
-	std::shared_ptr<Request> StartDownloadWithCallback(
-		std::string_view url,
-		const Path &outfile,
-		RequestFlags flags,
-		std::function<void(Request &)> callback,
-		std::string_view name = "",
-		const char *acceptMime = nullptr);
+	std::shared_ptr<Request> StartDownload(std::string_view url, const Path &outfile, RequestFlags flags, const char *acceptMime = nullptr, std::string_view name = "", RequestCompletionCallback completionCallback = {});
 
 	std::shared_ptr<Request> AsyncPostWithCallback(
 		std::string_view url,
 		std::string_view postData,
 		std::string_view postMime, // Use postMime = "application/x-www-form-urlencoded" for standard form-style posts, such as used by retroachievements. For encoding form data manually we have MultipartFormDataEncoder.
 		RequestFlags flags,
-		std::function<void(Request &)> callback,
+		RequestCompletionCallback completionCallback,
 		std::string_view name = "");
 
 	// Drops finished downloads from the list.
@@ -135,7 +134,11 @@ public:
 		cacheDir_ = path;
 	}
 
-	Path UrlToCachePath(const std::string_view url);
+	// Just computes the path, doesn't check availability.
+	Path UrlToCachePath(const std::string_view url) const;
+
+	// Does the file read. Returns false if file missing or other error.
+	bool ReadFileFromCache(std::string_view url, std::string *data);
 
 private:
 	std::vector<std::shared_ptr<Request>> downloads_;

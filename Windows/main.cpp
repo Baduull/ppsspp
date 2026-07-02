@@ -68,6 +68,7 @@
 #include "Windows/resource.h"
 #include "Windows/InputDevice.h"
 #include "Windows/MainWindow.h"
+#include "Windows/CaptureDevice.h"
 #include "Windows/Debugger/Debugger_Disasm.h"
 #include "Windows/Debugger/Debugger_MemoryDlg.h"
 #include "Windows/Debugger/Debugger_VFPUDlg.h"
@@ -406,11 +407,27 @@ float System_GetPropertyFloat(SystemProperty prop) {
 		return ScreenRefreshRateHz();
 	case SYSPROP_DISPLAY_DPI:
 		return ScreenDPI();
+#if 0
+	// Simulate something like Android landscape mode for testing
 	case SYSPROP_DISPLAY_SAFE_INSET_LEFT:
+		return 45.0f;
 	case SYSPROP_DISPLAY_SAFE_INSET_RIGHT:
+		return 100.0f;
 	case SYSPROP_DISPLAY_SAFE_INSET_TOP:
+		return 0.0f;
+	case SYSPROP_DISPLAY_SAFE_INSET_BOTTOM:
+		return 80.0f;
+#else
+	case SYSPROP_DISPLAY_SAFE_INSET_LEFT:
+		return 0.0f;
+	case SYSPROP_DISPLAY_SAFE_INSET_RIGHT:
+		return 0.0f;
+	case SYSPROP_DISPLAY_SAFE_INSET_TOP:
+		return 0.0f;
 	case SYSPROP_DISPLAY_SAFE_INSET_BOTTOM:
 		return 0.0f;
+
+#endif
 	default:
 		return -1;
 	}
@@ -686,7 +703,7 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 		std::thread([=] {
 			SetCurrentThreadName("BrowseForImage");
 			std::string out;
-			if (W32Util::BrowseForFileName(true, MainWindow::GetHWND(), ConvertUTF8ToWString(param1).c_str(), nullptr,
+			if (W32Util::BrowseForFileName(true, MainWindow::GetHWND(), ConvertUTF8ToWString(param1).c_str(), nullptr, nullptr,
 				FinalizeFilter(L"All supported images (*.jpg *.jpeg *.png)|*.jpg;*.jpeg;*.png|All files (*.*)|*.*||").c_str(), L"jpg", out)) {
 				g_requestManager.PostSystemSuccess(requestId, out.c_str());
 			} else {
@@ -699,16 +716,17 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 	{
 		const BrowseFileType browseType = (BrowseFileType)param3;
 		std::wstring filter = MakeWindowsFilter(browseType);
-		std::wstring initialFilename = ConvertUTF8ToWString(param2);  // TODO: Plumb through
+		std::string initialFilename = param2;
 		if (filter.empty()) {
 			// Unsupported.
 			return false;
 		}
 		const bool load = type == SystemRequestType::BROWSE_FOR_FILE;
-		std::thread([=] {
+		std::thread([load, param1, initialFilename, filter, requestId] {
 			SetCurrentThreadName("BrowseForFile");
-			std::string out;
-			if (W32Util::BrowseForFileName(load, MainWindow::GetHWND(), ConvertUTF8ToWString(param1).c_str(), nullptr, filter.c_str(), L"", out)) {
+			std::string out = initialFilename;
+			std::wstring wInitial = ConvertUTF8ToWString(initialFilename);
+			if (W32Util::BrowseForFileName(load, MainWindow::GetHWND(), ConvertUTF8ToWString(param1).c_str(), nullptr, wInitial.c_str(), filter.c_str(), L"", out)) {
 				g_requestManager.PostSystemSuccess(requestId, out.c_str());
 			} else {
 				g_requestManager.PostSystemFailure(requestId);
@@ -1154,6 +1172,13 @@ int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLin
 		g_logManager.SetAllLogLevels(LogLevel::LDEBUG);
 	}
 
+	// Media foundation
+	if (!RegisterCMPTMFApis()) {
+		ERROR_LOG(Log::System, "Failed to load Media Foundation functions");
+		// Let's unregister again.
+		UnRegisterCMPTMFApis();
+	}
+
 	ContextMenuInit(_hInstance);
 	MainWindow::Init(_hInstance);
 	MainWindow::Show(_hInstance);
@@ -1234,6 +1259,8 @@ int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLin
 	MainWindow::DestroyDebugWindows();
 	DialogManager::DestroyAll();
 	timeEndPeriod(1);
+
+	UnRegisterCMPTMFApis();
 
 	g_logManager.Shutdown();
 	WinMainCleanup();

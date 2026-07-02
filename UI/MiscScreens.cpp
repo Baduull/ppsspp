@@ -240,7 +240,16 @@ TextureShaderScreen::TextureShaderScreen(std::string_view title) : ListPopupScre
 void TextureShaderScreen::CreateViews() {
 	auto ps = GetI18NCategory(I18NCat::TEXTURESHADERS);
 	ReloadAllPostShaderInfo(screenManager()->getDrawContext());
+	
 	shaders_ = GetAllTextureShaderInfo();
+	for (int i = 0; i < (int)shaders_.size(); ) {
+		if (shaders_[i].hidden) {
+			shaders_.erase(shaders_.begin() + i);
+		} else {
+			i++;
+		}
+	}
+
 	std::vector<std::string> items;
 	int selected = -1;
 	for (int i = 0; i < (int)shaders_.size(); i++) {
@@ -410,16 +419,18 @@ bool LogoScreen::key(const KeyInput &key) {
 	return false;
 }
 
-void LogoScreen::touch(const TouchInput &touch) {
+bool LogoScreen::touch(const TouchInput &touch) {
 	if (touch.flags & TouchInputFlags::DOWN) {
 		Next();
+		return true;
 	}
+	return false;
 }
 
 void LogoScreen::DrawForeground(UIContext &dc) {
 	using namespace Draw;
 
-	const Bounds &bounds = dc.GetLayoutBounds();
+	const Bounds &bounds = GetLayoutBounds(dc);
 
 	dc.Begin();
 
@@ -505,8 +516,6 @@ std::string_view CreditsScreen::GetTitle() const {
 
 void CreditsScreen::CreateDialogViews(UI::ViewGroup *parent) {
 	using namespace UI;
-
-	ignoreBottomInset_ = false;
 
 	auto di = GetI18NCategory(I18NCat::DIALOG);
 	auto cr = GetI18NCategory(I18NCat::PSPCREDITS);

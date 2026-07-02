@@ -21,7 +21,6 @@
 #include "zlib.h"
 
 #include "Common/Data/Convert/SmallDataConvert.h"
-#include "Common/Data/Text/Parsers.h"
 #include "Common/Serialize/Serializer.h"
 #include "Common/Serialize/SerializeFuncs.h"
 #include "Common/Serialize/SerializeSet.h"
@@ -31,6 +30,7 @@
 #include "Common/System/System.h"
 #include "Common/System/OSD.h"
 #include "Common/Data/Text/I18n.h"
+#include "Common/Data/Text/StringWriter.h"
 
 #include "Core/Config.h"
 #include "Core/Core.h"
@@ -363,7 +363,7 @@ void PSPModule::GetLongInfo(char *ptr, int bufSize) const {
 	}
 	w.F("Text: %08x (%08x bytes)\n", nm.text_addr, nm.text_size);
 	w.F("Data: %08x (%08x bytes)\n", GetDataAddr(), nm.data_size);
-	w.F("BSS: % 08x(% 08x bytes)\n", GetBSSAddr(), nm.bss_size);
+	w.F("BSS: %08x (%08x bytes)\n", GetBSSAddr(), nm.bss_size);
 	w.F("Entry: %08x GP: %08x\n", nm.entry_addr, nm.gp_value);
 	w.F("Status: %08x\n", nm.status);
 }
@@ -1096,8 +1096,8 @@ static PSPModule *__KernelLoadELFFromPtr(const u8 *ptr, size_t elfSize, u32 load
 			// In this case it's definitely not compressed. Added assert below.
 		}
 
-		// Don't accept ELFs over 24MB.
-		if (decryptedSize > 24 * 1024 * 1024) {
+		// Don't accept ELFs over 24MB - nor ones with negative size, of course.
+		if (decryptedSize < 0 || decryptedSize > 24 * 1024 * 1024) {
 			*error_string = StringFromFormat("ELF/PRX corrupt, unreasonable decrypted size: %d", (u32)decryptedSize);
 			// TODO: Might be the wrong error code.
 			error = SCE_KERNEL_ERROR_FILEERR;
@@ -1110,7 +1110,7 @@ static PSPModule *__KernelLoadELFFromPtr(const u8 *ptr, size_t elfSize, u32 load
 
 			// Can't decompress in place so we need a temporary buffer.
 			u8 *temp = (u8 *)malloc(decryptedSize);
-			_assert_msg_(temp != nullptr, "Failed to allocate gzip decompression buffer");
+			_assert_msg_(temp != nullptr, "Failed to allocate gzip decompression buffer (decryptedSize: %d)", decryptedSize);
 			memcpy(temp, ptr, decryptedSize);
 			int outBytes = gzipDecompress((u8 *)ptr, maxElfSize, temp);
 			if (outBytes < 0) {
@@ -2639,7 +2639,6 @@ const HLEFunction ModuleMgrForUser[] = {
 	{0XFBE27467, nullptr,                                               "ModuleMgrForUser_FBE27467",               '?', ""       },
 };
 
-
 const HLEFunction ModuleMgrForKernel[] = {
 	{0x50F0C1EC, &WrapU_UUUUU<sceKernelStartModule>,                    "sceKernelStartModule",                    'v', "xxxxx", HLE_NOT_IN_INTERRUPT | HLE_NOT_DISPATCH_SUSPENDED | HLE_KERNEL_SYSCALL },
 	{0x977DE386, &WrapU_CUU<sceKernelLoadModule>,                       "sceKernelLoadModule",                     'x', "sxx",   HLE_KERNEL_SYSCALL },
@@ -2649,6 +2648,7 @@ const HLEFunction ModuleMgrForKernel[] = {
 	{0x748CBED9, &WrapU_UU<sceKernelQueryModuleInfo>,                   "sceKernelQueryModuleInfo",                'x', "xx",    HLE_KERNEL_SYSCALL },
 	{0x644395E2, &WrapU_UUU<sceKernelGetModuleIdList>,                  "sceKernelGetModuleIdList",                'x', "xxx",   HLE_KERNEL_SYSCALL },
 	{0X2E0911AA, &WrapU_U<sceKernelUnloadModule>,                       "sceKernelUnloadModule",                   'x', "x" ,    HLE_KERNEL_SYSCALL },
+	{0xD675EBB8, &WrapU_UUU<sceKernelSelfStopUnloadModule>,             "sceKernelSelfStopUnloadModule",           'x', "xxx",   HLE_KERNEL_SYSCALL },
 };
 
 void Register_ModuleMgrForUser() {

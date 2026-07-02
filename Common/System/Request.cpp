@@ -114,7 +114,7 @@ void RequestManager::PostSystemSuccess(int requestId, std::string_view responseS
 	callbackMap_.erase(iter);
 }
 
-void RequestManager::PostSystemFailure(int requestId) {
+void RequestManager::PostSystemFailure(int requestId, int responseValue) {
 	std::lock_guard<std::mutex> guard(callbackMutex_);
 	auto iter = callbackMap_.find(requestId);
 	if (iter == callbackMap_.end()) {
@@ -127,6 +127,7 @@ void RequestManager::PostSystemFailure(int requestId) {
 	std::lock_guard<std::mutex> responseGuard(responseMutex_);
 	PendingFailure response;
 	response.failedCallback = iter->second.failedCallback;
+	response.responseValue = responseValue;
 	pendingFailures_.push_back(response);
 	callbackMap_.erase(iter);
 }
@@ -141,7 +142,7 @@ void RequestManager::ProcessRequests() {
 	pendingSuccesses_.clear();
 	for (auto &iter : pendingFailures_) {
 		if (iter.failedCallback) {
-			iter.failedCallback();
+			iter.failedCallback(iter.responseValue);
 		}
 	}
 	pendingFailures_.clear();
@@ -178,4 +179,3 @@ void System_RunCallbackInWndProc(void (*callback)(void *, void *), void *userdat
 void System_MoveToTrash(const Path &path) {
 	g_requestManager.MakeSystemRequest(SystemRequestType::MOVE_TO_TRASH, NO_REQUESTER_TOKEN, nullptr, nullptr, path.ToString(), "", 0);
 }
-

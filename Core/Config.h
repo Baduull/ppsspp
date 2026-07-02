@@ -190,14 +190,15 @@ public:
 	bool bDumpVideoOutput;
 	bool bDumpAudio;
 	bool bSaveLoadResetsAVdumping;
+	bool bShowSaveLoadIndicator;
 	bool bEnableLogging;
 	bool bEnableFileLogging;
 	int iLogOutputTypes;  // enum class LogOutput
 	int iDumpFileTypes;  // DumpFileType bitflag enum
 	bool bFullscreenOnDoubleclick;
-
-	// These four are Win UI only
 	bool bPauseOnLostFocus;
+
+	// These are Win UI only
 	bool bTopMost;
 	bool bIgnoreWindowsKey;
 	bool bRestartRequired;
@@ -283,14 +284,13 @@ public:
 
 	bool bSoftwareRendering;
 	bool bSoftwareRenderingJit;
-	bool bHardwareTransform; // only used in the GLES backend
+	bool bHardwareTransform;
 	bool bSoftwareSkinning;
 	bool bVendorBugChecksEnabled;
 	bool bUseGeometryShader;
 
 	// Speedhacks (more will be moved here):
 	bool bSkipBufferEffects;
-	bool bDisableRangeCulling;
 	int iDepthRasterMode;
 
 	int iTexFiltering; // 1 = auto , 2 = nearest , 3 = linear , 4 = auto max quality
@@ -320,11 +320,11 @@ public:
 	float fUITint;
 	float fUISaturation;
 
-	bool bTextureBackoffCache;
 	bool bVertexDecoderJit;
 	int iAppSwitchMode;
 	bool bFullScreen;
 	bool bFullScreenMulti;
+	bool bAllowFullScreenExclusive;
 	int iInternalResolution;  // 0 = Auto (native), 1 = 1x (480x272), 2 = 2x, 3 = 3x, 4 = 4x and so on.
 	int iAnisotropyLevel;  // 0 - 5, powers of 2: 0 = 1x = no aniso
 	int iMultiSampleLevel;
@@ -345,6 +345,7 @@ public:
 	int iRewindSnapshotInterval;
 	bool bUISound;
 	bool bEnableStateUndo;
+	bool bConfirmLoadState;
 	std::string sStateLoadUndoGame;
 	std::string sStateUndoLastSaveGame;
 	int iStateUndoLastSaveSlot;
@@ -362,10 +363,8 @@ public:
 	int iGE2BloomReductionPercent; // 0-100, reduces in-game bloom for God Eater 2 via compat flag
 	int iSkipGPUReadbackMode;  // 0 = off, 1 = skip, 2 = to texture
 	int iSplineBezierQuality; // 0 = low , 1 = Intermediate , 2 = High
-	bool bHardwareTessellation;
 	bool bShaderCache;  // Hidden ini-only setting, useful for debugging shader compile times.
 	bool bUberShaderVertex;
-	bool bUberShaderFragment;
 	int iDefaultTab;
 	int iScreenshotMode;
 	bool bVulkanDisableImplicitLayers;
@@ -426,6 +425,8 @@ public:
 	float fGameGridScale;
 	int iBackgroundAnimation;  // enum BackgroundAnimation
 	bool bTransparentBackground;
+	int iSettingsCurrentTab;
+	int iDeveloperSettingsCurrentTab;
 
 	std::string sThemeName;
 
@@ -513,6 +514,15 @@ public:
 	// Auto rotation speed
 	float fAnalogAutoRotSpeed;
 
+	// Advanced analog deadzone settings (Steam Input-style).
+	// Deadzone shape: 0 = Circle, 1 = Square (default, matches legacy max-norm), 2 = Cross
+	int iAnalogDeadzoneShape;
+	// Cross-shaped axial anti-deadzone. Boosts small off-axis values past this threshold,
+	// making the output skip the zone near each cardinal axis to prevent axis snapping.
+	float fAnalogAxialDeadzone;
+	// Response curve type: 0 = Linear, 1 = Aggressive, 2 = Relaxed, 3 = Wide
+	int iAnalogResponseCurve;
+
 	// Sets up how much the analog limiter button restricts digital->analog input.
 	float fAnalogLimiterDeadzone;
 
@@ -529,6 +539,11 @@ public:
 	float fMouseSensitivity;
 	float fMouseSmoothing;
 	int iMouseWheelUpDelayMs;
+
+	// Crude Windows controller filter.
+	bool bAllowHIDInput;
+	bool bAllowXInput;
+	bool bAllowDInput;
 
 	bool bSystemControls;
 	int iRapidFireInterval;
@@ -556,11 +571,16 @@ public:
 	bool bEnableAdhocServer;
 	std::string sProAdhocServer;
 	int iAdhocServerRelayMode;
+	bool bAdhocServerShowPlayerPorts;
 	std::string sInfrastructureDNSServer;
 	std::string sInfrastructureUsername;  // Username used for Infrastructure play. Different restrictions.
 	bool bInfrastructureAutoDNS;
 	bool bAllowSavestateWhileConnected;  // Developer option, ini-only. No normal users need this, it's always wrong to save/load state when online.
 	bool bAllowSpeedControlWhileConnected;  // Useful in some games but not recommended.
+
+	std::string sAdhocServerListUrl;
+	std::vector<std::string> vCustomAdhocServerList;
+	std::vector<std::string> vCustomAdhocServerListWithRelay;
 
 	bool bEnableWlan;
 	std::map<std::string, std::string> mHostToAlias;  // Local DNS database stored in ini file
@@ -619,7 +639,6 @@ public:
 	int iConsoleWindowY;
 	int iFontWidth;
 	int iFontHeight;
-	bool bDisplayStatusBar;
 	bool bShowBottomTabTitles;
 	bool bShowDeveloperMenu;
 
@@ -776,28 +795,8 @@ private:
 };
 
 std::string CreateRandMAC();
+std::string DefaultProAdhocServer();
 
 // TODO: Find a better place for this.
 extern http::RequestManager g_DownloadManager;
 extern Config g_Config;
-
-enum class AdhocDataMode {
-	P2P = 0,
-	AemuPostoffice,
-};
-
-struct AdhocServerListEntry{
-	std::string name;
-	std::string hostname;
-	std::string community_link;
-	std::string location;
-	std::string note;
-	AdhocDataMode mode = AdhocDataMode::P2P;
-};
-
-extern const std::vector<AdhocServerListEntry> defaultProAdhocServerList;
-
-extern std::mutex downloadedProAdhocServerListMutex;
-extern std::vector<AdhocServerListEntry> downloadedProAdhocServerList;
-
-AdhocDataMode getAdhocServerDataMode(const std::string &server);

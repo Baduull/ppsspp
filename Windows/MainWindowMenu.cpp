@@ -45,6 +45,7 @@
 #include "Core/SaveState.h"
 #include "Core/Core.h"
 #include "Core/RetroAchievements.h"
+#include "UI/PauseScreen.h"
 
 #ifdef RC_CLIENT_SUPPORTS_RAINTEGRATION
 #include "ext/rcheevos/include/rc_client_raintegration.h"
@@ -352,7 +353,7 @@ namespace MainWindow {
 		DrawMenuBar(hWnd);
 	}
 
-	void BrowseAndBootDone(std::string filename);
+	void BrowseAndBootDone(std::string_view filename);
 
 	void BrowseAndBoot(RequesterToken token, std::string defaultPath, bool browseDirectory) {
 		bool browsePauseAfter = false;
@@ -366,37 +367,37 @@ namespace MainWindow {
 		W32Util::MakeTopMost(GetHWND(), false);
 
 		if (browseDirectory) {
-			System_BrowseForFolder(token, mm->T("Load"), Path(), [](const std::string &value, int) {
+			System_BrowseForFolder(token, mm->T("Load"), Path(), [](std::string_view value, int) {
 				BrowseAndBootDone(value);
 			});
 		} else {
-			System_BrowseForFile(token, mm->T("Load"), BrowseFileType::BOOTABLE, [](const std::string &value, int) {
+			System_BrowseForFile(token, mm->T("Load"), BrowseFileType::BOOTABLE, [](std::string_view value, int) {
 				BrowseAndBootDone(value);
 			});
 		}
 	}
 
-	void BrowseAndBootDone(std::string filename) {
+	void BrowseAndBootDone(std::string_view filename) {
 		if (GetUIState() == UISTATE_INGAME || GetUIState() == UISTATE_EXCEPTION || GetUIState() == UISTATE_PAUSEMENU) {
 			Core_Resume();
 		}
-		filename = ReplaceAll(filename, "\\", "/");
-		System_PostUIMessage(UIMessage::REQUEST_GAME_BOOT, filename);
+		std::string fileStr(filename);
+		fileStr = ReplaceAll(fileStr, "\\", "/");
+		System_PostUIMessage(UIMessage::REQUEST_GAME_BOOT, fileStr);
 		W32Util::MakeTopMost(GetHWND(), g_Config.bTopMost);
 	}
 
 	static void UmdSwitchAction(RequesterToken token) {
 		auto mm = GetI18NCategory(I18NCat::MAINMENU);
-		System_BrowseForFile(token, mm->T("Switch UMD"), BrowseFileType::BOOTABLE, [](const std::string &value, int) {
+		System_BrowseForFile(token, mm->T("Switch UMD"), BrowseFileType::BOOTABLE, [](std::string_view value, int) {
 			// This is safe because the callback runs on the emu thread.
 			__UmdReplace(Path(value));
 		});
 	}
 
-	static void SaveStateActionFinished(SaveState::Status status, std::string_view message) {
-		if (!message.empty() && (!g_Config.bDumpFrames || !g_Config.bDumpVideoOutput)) {
-			g_OSD.Show(status == SaveState::Status::SUCCESS ? OSDType::MESSAGE_SUCCESS : OSDType::MESSAGE_ERROR, message, status == SaveState::Status::SUCCESS ? 2.0 : 5.0);
-		}
+	static void SaveStateActionFinished(SaveState::Status status, std::string_view message, std::string_view metadata) {
+		// Reuse the message from the pause screen.
+		ShowMessageAfterSaveStateAction(status, message, metadata);
 		PostMessage(MainWindow::GetHWND(), WM_USER_SAVESTATE_FINISH, 0, 0);
 	}
 
@@ -558,7 +559,7 @@ namespace MainWindow {
 
 		case ID_FILE_LOADSTATEFILE:
 			if (!Achievements::WarnUserIfHardcoreModeActive(false) && !NetworkWarnUserIfOnlineAndCantSavestate()) {
-				if (W32Util::BrowseForFileName(true, hWnd, L"Load state", 0, L"Save States (*.ppst)\0*.ppst\0All files\0*.*\0\0", L"ppst", fn)) {
+				if (W32Util::BrowseForFileName(true, hWnd, L"Load state", nullptr, nullptr, L"Save States (*.ppst)\0*.ppst\0All files\0*.*\0\0", L"ppst", fn)) {
 					SetCursor(LoadCursor(0, IDC_WAIT));
 					SaveState::Load(Path(fn), -1, SaveStateActionFinished);
 				}
@@ -566,7 +567,7 @@ namespace MainWindow {
 			break;
 		case ID_FILE_SAVESTATEFILE:
 			if (!Achievements::WarnUserIfHardcoreModeActive(true) && !NetworkWarnUserIfOnlineAndCantSavestate()) {
-				if (W32Util::BrowseForFileName(false, hWnd, L"Save state", 0, L"Save States (*.ppst)\0*.ppst\0All files\0*.*\0\0", L"ppst", fn)) {
+				if (W32Util::BrowseForFileName(false, hWnd, L"Save state", nullptr, L"state.ppst", L"Save States (*.ppst)\0*.ppst\0All files\0*.*\0\0", L"ppst", fn)) {
 					SetCursor(LoadCursor(0, IDC_WAIT));
 					SaveState::Save(Path(fn), -1, SaveStateActionFinished);
 				}
@@ -773,27 +774,29 @@ namespace MainWindow {
 		}
 
 		case ID_DEBUG_LOADMAPFILE:
-			if (W32Util::BrowseForFileName(true, hWnd, L"Load .ppmap", 0, L"Maps\0*.ppmap\0All files\0*.*\0\0", L"ppmap", fn)) {
+			if (W32Util::BrowseForFileName(true, hWnd, L"Load .ppmap", nullptr, nullptr, L"Maps\0*.ppmap\0All files\0*.*\0\0", L"ppmap", fn)) {
 				g_symbolMap->LoadSymbolMap(Path(fn));
 				NotifyDebuggerMapLoaded();
 			}
 			break;
 
 		case ID_DEBUG_SAVEMAPFILE:
-			if (W32Util::BrowseForFileName(false, hWnd, L"Save .ppmap", 0, L"Maps\0*.ppmap\0All files\0*.*\0\0", L"ppmap", fn))
+			if (W32Util::BrowseForFileName(false, hWnd, L"Save .ppmap", nullptr, L"map.ppmap", L"Maps\0*.ppmap\0All files\0*.*\0\0", L"ppmap", fn)) {
 				g_symbolMap->SaveSymbolMap(Path(fn));
+			}
 			break;
 
 		case ID_DEBUG_LOADSYMFILE:
-			if (W32Util::BrowseForFileName(true, hWnd, L"Load .sym", 0, L"Symbols\0*.sym\0All files\0*.*\0\0", L"sym", fn)) {
+			if (W32Util::BrowseForFileName(true, hWnd, L"Load .sym", nullptr, nullptr, L"Symbols\0*.sym\0All files\0*.*\0\0", L"sym", fn)) {
 				g_symbolMap->LoadNocashSym(Path(fn));
 				NotifyDebuggerMapLoaded();
 			}
 			break;
 
 		case ID_DEBUG_SAVESYMFILE:
-			if (W32Util::BrowseForFileName(false, hWnd, L"Save .sym", 0, L"Symbols\0*.sym\0All files\0*.*\0\0", L"sym", fn))
+			if (W32Util::BrowseForFileName(false, hWnd, L"Save .sym", nullptr, L"symbols.sym", L"Symbols\0*.sym\0All files\0*.*\0\0", L"sym", fn)) {
 				g_symbolMap->SaveNocashSym(Path(fn));
+			}
 			break;
 
 		case ID_DEBUG_RESETSYMBOLTABLE:
@@ -845,7 +848,7 @@ namespace MainWindow {
 				MessageBox(hWnd, L"File does not exist.", L"Sorry", 0);
 			} else if (info.type == FILETYPE_DIRECTORY) {
 				MessageBox(hWnd, L"Cannot extract directories.", L"Sorry", 0);
-			} else if (W32Util::BrowseForFileName(false, hWnd, L"Save file as...", 0, L"All files\0*.*\0\0", L"", fn)) {
+			} else if (W32Util::BrowseForFileName(false, hWnd, L"Save file as...", nullptr, nullptr, L"All files\0*.*\0\0", L"", fn)) {
 				const u32 handle = pspFileSystem.OpenFile(filename, FILEACCESS_READ, "");
 				// Note: len may be in blocks.
 				size_t len = pspFileSystem.SeekFile(handle, 0, FILEMOVE_END);
@@ -978,8 +981,8 @@ namespace MainWindow {
 			break;
 
 		default:
-			if (!Achievements::WarnUserIfHardcoreModeActive(true) && !NetworkWarnUserIfOnlineAndCantSavestate()) {
-				if (wmId >= ID_FILE_SAVESTATE_SLOT_BASE && wmId < ID_FILE_SAVESTATE_SLOT_BASE + g_Config.iSaveStateSlotCount) {
+			if (wmId >= ID_FILE_SAVESTATE_SLOT_BASE && wmId < ID_FILE_SAVESTATE_SLOT_BASE + g_Config.iSaveStateSlotCount) {
+				if (!Achievements::WarnUserIfHardcoreModeActive(true) && !NetworkWarnUserIfOnlineAndCantSavestate()) {
 					g_Config.iCurrentStateSlot = wmId - ID_FILE_SAVESTATE_SLOT_BASE;
 				}
 				break;
@@ -1140,13 +1143,8 @@ namespace MainWindow {
 			CheckMenuItem(menu, texscalingitems[i], MF_BYCOMMAND | (selected ? MF_CHECKED : MF_UNCHECKED));
 		}
 
-		if (g_Config.iGPUBackend == (int)GPUBackend::OPENGL && !gl_extensions.OES_texture_npot) {
-			EnableMenuItem(menu, ID_TEXTURESCALING_3X, MF_GRAYED);
-			EnableMenuItem(menu, ID_TEXTURESCALING_5X, MF_GRAYED);
-		} else {
-			EnableMenuItem(menu, ID_TEXTURESCALING_3X, MF_ENABLED);
-			EnableMenuItem(menu, ID_TEXTURESCALING_5X, MF_ENABLED);
-		}
+		EnableMenuItem(menu, ID_TEXTURESCALING_3X, MF_ENABLED);
+		EnableMenuItem(menu, ID_TEXTURESCALING_5X, MF_ENABLED);
 
 		static const int texscalingtypeitems[] = {
 			ID_TEXTURESCALING_XBRZ,

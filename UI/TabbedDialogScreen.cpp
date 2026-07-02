@@ -13,6 +13,9 @@
 #include "Common/UI/Context.h"
 #include "UI/TabbedDialogScreen.h"
 
+UITabbedBaseDialogScreen::UITabbedBaseDialogScreen(const Path &gamePath, int *currentTabSetting, TabDialogFlags flags)
+	: UIBaseDialogScreen(gamePath), currentTabSetting_(currentTabSetting), flags_(flags) {}
+
 void UITabbedBaseDialogScreen::AddTab(const char *tag, std::string_view title, ImageID imageId, std::function<void(UI::LinearLayout *)> createCallback, TabFlags flags) {
 	using namespace UI;
 
@@ -54,8 +57,6 @@ void UITabbedBaseDialogScreen::CreateViews() {
 	// Scrolling action menu to the right.
 	using namespace UI;
 
-	root_ = new AnchorLayout(new LayoutParams(FILL_PARENT, FILL_PARENT));
-
 	auto se = GetI18NCategory(I18NCat::SEARCH);
 	filterNotice_ = new TextView("(filter notice, you shouldn't see this text", new LinearLayoutParams(Margins(20, 5)));
 	filterNotice_->SetVisibility(V_GONE);
@@ -81,7 +82,7 @@ void UITabbedBaseDialogScreen::CreateViews() {
 		if (!(flags_ & TabDialogFlags::ContextMenuInPortrait)) {
 			CreateExtraButtons(verticalLayout, 0);
 		}
-		root_->Add(verticalLayout);
+		root_ = verticalLayout;
 	} else {
 		TabHolderFlags tabHolderFlags = TabHolderFlags::Default;
 		if (flags_ & TabDialogFlags::VerticalShowIcons) {
@@ -90,7 +91,7 @@ void UITabbedBaseDialogScreen::CreateViews() {
 		tabHolder_ = new TabHolder(ORIENT_VERTICAL, 300, tabHolderFlags, filterNotice_, nullptr, new AnchorLayoutParams(10, 0, 0, 0));
 		CreateExtraButtons(tabHolder_->Container(), 10);
 		tabHolder_->AddBack(this);
-		root_->Add(tabHolder_);
+		root_ = tabHolder_;
 	}
 
 	tabHolder_->SetTag(tag());  // take the tag from the screen.
@@ -103,6 +104,17 @@ void UITabbedBaseDialogScreen::CreateViews() {
 
 	// Let the subclass create its tabs.
 	CreateTabs();
+	if (currentTabSetting_) {
+		tabHolder_->SetInitialTab(*currentTabSetting_);
+	} else {
+		tabHolder_->EnsureTab(tabHolder_->GetCurrentTab());
+	}
+
+	tabHolder_->OnChangeTab.Add([this](UI::EventParams &e) {
+		if (currentTabSetting_) {
+			*currentTabSetting_ = e.a;
+		}
+	});
 
 	if (System_GetPropertyBool(SYSPROP_HAS_KEYBOARD) || System_GetPropertyBool(SYSPROP_HAS_TEXT_INPUT_DIALOG)) {
 		// Hide search if screen is too small.

@@ -1,12 +1,13 @@
 #pragma once
 
-#include "Common/Input/InputState.h"
-#include "Core/KeyMap.h"
-
-#include <functional>
 #include <cstring>
+#include <atomic>
+#include <functional>
 #include <mutex>
 #include <vector>
+
+#include "Common/Input/InputState.h"
+#include "Core/KeyMap.h"
 
 struct DisplayLayoutConfig;
 
@@ -21,15 +22,18 @@ public:
 	virtual void SetRawAnalog(int stick, float x, float y) {}
 };
 
+class StringWriter;
+
 // Utilities for mapping input events to PSP inputs and virtual keys.
 // Main use is of course from EmuScreen.cpp, but also useful from control settings etc.
 class ControlMapper {
 public:
-	void Update(const DisplayLayoutConfig &config, double now);
+	void UpdateConfig(const DisplayLayoutConfig &config);
+	void UpdateAutoMovements(double now);
 
 	// Inputs to the table-based mapping
 	// These functions are free-threaded.
-	bool Key(const KeyInput &key, bool *pauseTrigger);
+	bool Key(const KeyInput &key);
 	void Axis(const AxisInput *axes, size_t count);
 
 	// Required callbacks.
@@ -55,7 +59,11 @@ public:
 	// Call when the emu screen gets pushed behind some other screen, like the pause screen, to release all "down" inputs.
 	void ReleaseAll();
 
-	void GetDebugString(char *buffer, size_t bufSize) const;
+	void GetDebugString(StringWriter &w) const;
+
+	bool PollPauseTrigger() {
+		return pauseTrigger_.exchange(false);
+	}
 
 	struct InputSample {
 		float value;
@@ -63,6 +71,7 @@ public:
 	};
 
 private:
+	void UpdateSwapAxes();
 	bool UpdatePSPState(const InputMapping &changedMapping, double now);
 	float MapAxisValue(float value, int vkId, const InputMapping &mapping, const InputMapping &changedMapping, bool *oppositeTouched);
 	void SwapMappingIfEnabled(uint32_t *vkey);
@@ -75,6 +84,14 @@ private:
 
 	void UpdateCurInputAxis(const InputMapping &mapping, float value, double timestamp);
 	float GetDeviceAxisThreshold(int device, const InputMapping &mapping);
+
+	bool IsVirtKeyOn(VirtKey key) const {
+		int index = key - VIRTKEY_FIRST;
+		if (index < 0 || index >= VIRTKEY_COUNT) {
+			return false;
+		}
+		return virtKeyOn_[index];
+	}
 
 	// To track mappable virtual keys. We can have as many as we want.
 	float virtKeys_[VIRTKEY_COUNT]{};
@@ -94,6 +111,8 @@ private:
 	// Mappable auto-rotation. Useful for keyboard/dpad->analog in a few games.
 	bool autoRotatingAnalogCW_ = false;
 	bool autoRotatingAnalogCCW_ = false;
+
+	std::atomic<bool> pauseTrigger_{};
 
 	bool swapAxes_ = false;
 

@@ -780,15 +780,6 @@ static void check_variables(CoreParameter &coreParam)
          g_Config.bSkipBufferEffects = true;
    }
 
-   var.key = "ppsspp_disable_range_culling";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-   {
-      if (!strcmp(var.value, "disabled"))
-         g_Config.bDisableRangeCulling = false;
-      else
-         g_Config.bDisableRangeCulling = true;
-   }
-
    var.key = "ppsspp_skip_gpu_readbacks";
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
@@ -796,15 +787,6 @@ static void check_variables(CoreParameter &coreParam)
          g_Config.iSkipGPUReadbackMode = (int)SkipGPUReadbackMode::NO_SKIP;
       else
          g_Config.iSkipGPUReadbackMode = (int)SkipGPUReadbackMode::SKIP;
-   }
-
-   var.key = "ppsspp_lazy_texture_caching";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-   {
-      if (!strcmp(var.value, "disabled"))
-         g_Config.bTextureBackoffCache = false;
-      else
-         g_Config.bTextureBackoffCache = true;
    }
 
    var.key = "ppsspp_spline_quality";
@@ -834,15 +816,6 @@ static void check_variables(CoreParameter &coreParam)
          g_Config.bSoftwareSkinning = false;
       else
          g_Config.bSoftwareSkinning = true;
-   }
-
-   var.key = "ppsspp_hardware_tesselation";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-   {
-      if (!strcmp(var.value, "disabled"))
-         g_Config.bHardwareTessellation = false;
-      else
-         g_Config.bHardwareTessellation = true;
    }
 
    var.key = "ppsspp_lower_resolution_for_effects";
@@ -1106,6 +1079,7 @@ static void check_variables(CoreParameter &coreParam)
 
    bool updateAvInfo = false;
    bool updateGeometry = false;
+   bool resetHWContext = false;
 
    if (!detectVsyncSwapInterval && (vsyncSwapInterval != 1))
    {
@@ -1125,6 +1099,8 @@ static void check_variables(CoreParameter &coreParam)
          environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &avInfo);
          updateAvInfo = false;
          gpu->NotifyDisplayResized();
+         if (ctx && ctx->GetGPUCore() != GPUCORE_VULKAN)
+            resetHWContext = true;
       }
    }
 
@@ -1133,6 +1109,8 @@ static void check_variables(CoreParameter &coreParam)
       updateGeometry = true;
       if (gpu)
          gpu->NotifyDisplayResized();
+      if (ctx && backend != RETRO_HW_CONTEXT_NONE && ctx->GetGPUCore() != GPUCORE_VULKAN)
+         resetHWContext = true;
    }
 
    if (g_Config.iMultiSampleLevel != iMultiSampleLevel_prev && PSP_IsInited())
@@ -1156,6 +1134,11 @@ static void check_variables(CoreParameter &coreParam)
       retro_get_system_av_info(&avInfo);
       environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &avInfo);
    }
+
+   /* Must reset context to resize render area properly while running,
+    * but not necessary with software, and not working with Vulkan.. (TODO) */
+   if (resetHWContext)
+      ((LibretroHWRenderContext *)ctx)->ContextReset();
 
    set_variable_visibility();
 }
@@ -1338,11 +1321,6 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
 
    PSP_CoreParameter().pixelWidth  = PSP_CoreParameter().renderWidth  = info->geometry.base_width;
    PSP_CoreParameter().pixelHeight = PSP_CoreParameter().renderHeight = info->geometry.base_height;
-
-   /* Must reset context to resize render area properly while running,
-    * but not necessary with software, and not working with Vulkan.. (TODO) */
-   if (PSP_IsInited() && ctx && backend != RETRO_HW_CONTEXT_NONE && ctx->GetGPUCore() != GPUCORE_VULKAN)
-      ((LibretroHWRenderContext *)Libretro::ctx)->ContextReset();
 }
 
 unsigned retro_api_version(void) { return RETRO_API_VERSION; }
@@ -1356,8 +1334,9 @@ namespace Libretro
    static void EmuFrame()
    {
       ctx->SetRenderTarget();
-      if (ctx->GetDrawContext()) {
-         ctx->GetDrawContext()->BeginFrame(Draw::DebugFlags::NONE);
+      Draw::DrawContext *draw = ctx->GetDrawContext();
+      if (draw) {
+         draw->BeginFrame(Draw::DebugFlags::NONE);
       }
 
       const DisplayLayoutConfig &displayLayoutConfig = g_Config.GetDisplayLayoutConfig(g_display.GetDeviceOrientation());
@@ -1379,21 +1358,24 @@ namespace Libretro
 
       if (gpu) {
          gpu->EndHostFrame();
-
-         gpu->PrepareCopyDisplayToOutput(displayLayoutConfig);
+         if (draw) {
+            gpu->PrepareCopyDisplayToOutput(displayLayoutConfig);
+         }
       }
 
       // gotta do the backbuffer bind somewhere.
       using namespace Draw;
-      ctx->GetDrawContext()->BindFramebufferAsRenderTarget(nullptr, {RPAction::CLEAR, RPAction::CLEAR, RPAction::CLEAR}, "BackBuffer");
+      if (draw) {
+         draw->BindFramebufferAsRenderTarget(nullptr, {RPAction::CLEAR, RPAction::CLEAR, RPAction::CLEAR}, "BackBuffer");
+      }
 
-      if (gpu) {
+      if (gpu && draw) {
          gpu->CopyDisplayToOutput(displayLayoutConfig);
       }
 
-      if (ctx->GetDrawContext()) {
-         ctx->GetDrawContext()->EndFrame();
-         ctx->GetDrawContext()->Present(Draw::PresentMode::FIFO);
+      if (draw) {
+         draw->EndFrame();
+         draw->Present(Draw::PresentMode::FIFO);
       }
    }
 
@@ -1427,7 +1409,12 @@ namespace Libretro
 
    void EmuThreadStart()
    {
-      bool wasPaused = emuThreadState == EmuThreadState::PAUSED;
+      EmuThreadState state = emuThreadState;
+      bool wasPaused = state == EmuThreadState::PAUSED;
+
+      if (state == EmuThreadState::RUNNING || state == EmuThreadState::START_REQUESTED || (emuThread.joinable() && !wasPaused))
+         return;
+
       emuThreadState = EmuThreadState::START_REQUESTED;
 
       if (!wasPaused)
