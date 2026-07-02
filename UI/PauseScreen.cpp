@@ -68,6 +68,7 @@
 #include "UI/RetroAchievementScreens.h"
 #include "UI/TouchControlLayoutScreen.h"
 #include "UI/BackgroundAudio.h"
+#include "UI/Background.h"
 #include "UI/MiscViews.h"
 
 static void AfterSaveStateAction(SaveState::Status status, std::string_view message) {
@@ -103,11 +104,13 @@ public:
 		back->OnClick.Handle<UIScreen>(this, &UIScreen::OnBack);
 		content->Add(back);
 
-		content->Add(new ItemHeader(gr->T("Bloom reduction")));
-		PopupSliderChoice *slider = new PopupSliderChoice(&g_Config.iGE2BloomReductionPercent, 0, 100, 60, gr->T("Bloom reduction"), screenManager(), "%");
+		content->Add(new ItemHeader(gr->T("Patch")));
+		PopupSliderChoice *slider = new PopupSliderChoice(&g_Config.iGE2BloomReductionPercent, 0, 100, 60, gr->T("God Eater 2 bloom reduction"), screenManager(), "%");
 		slider->SetFormat("%d%%");
 		slider->SetLiveUpdate(true);
-		slider->SetHasDropShadow(false);
+		slider->SetEnabledFunc([]() {
+			return PSP_CoreParameter().compat.flags().ReduceBloomStrength && !g_Config.bSkipBufferEffects;
+		});
 		content->Add(slider);
 
 		Drawable backgroundWithAlpha(GetBackgroundColorWithAlpha(*screenManager()->getUIContext()));
