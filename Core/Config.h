@@ -285,9 +285,7 @@ public:
 	bool bSoftwareRendering;
 	bool bSoftwareRenderingJit;
 	bool bHardwareTransform;
-	bool bSoftwareSkinning;
 	bool bVendorBugChecksEnabled;
-	bool bUseGeometryShader;
 
 	// Speedhacks (more will be moved here):
 	bool bSkipBufferEffects;
@@ -359,6 +357,7 @@ public:
 	float fGameListScrollPosition;
 	float fHomebrewScrollPosition;
 	float fRemoteScrollPosition;
+	bool bReportAccurateFreeStorageSpace;
 	int iBloomHack; //0 = off, 1 = safe, 2 = balanced, 3 = aggressive
 	int iGE2BloomReductionPercent; // 0-100, reduces in-game bloom for God Eater 2 via compat flag
 	int iSkipGPUReadbackMode;  // 0 = off, 1 = skip, 2 = to texture
