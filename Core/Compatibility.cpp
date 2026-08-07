@@ -165,6 +165,7 @@ void Compatibility::CheckSettings(IniFile &iniFile, const std::string &gameID) {
 	CheckSetting(iniFile, gameID, "PersistentFramebuffers", &flags_.PersistentFramebuffers);
 	CheckSetting(iniFile, gameID, "FileCreatedTimeHack", &flags_.FileCreatedTimeHack);
 	CheckSetting(iniFile, gameID, "FastEmulatedGPU", &flags_.FastEmulatedGPU);
+	CheckSetting(iniFile, gameID, "CameraZoomFactor", &flags_.CameraZoomFactor);
 	CheckSetting(iniFile, gameID, "CorrectCullAfterClip", &flags_.CorrectCullAfterClip);
 	CheckSetting(iniFile, gameID, "SpriteBorderFix", &flags_.SpriteBorderFix);
 	CheckSetting(iniFile, gameID, "TextureCLUTInShader", &flags_.TextureCLUTInShader);

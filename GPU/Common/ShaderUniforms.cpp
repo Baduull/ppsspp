@@ -8,6 +8,8 @@
 #include "Common/Math/math_util.h"
 #include "Common/Math/CrossSIMD.h"
 #include "Common/Math/lin/vec3.h"
+#include "Core/Config.h"
+#include "Core/System.h"
 #include "Common/TimeUtil.h"
 #include "GPU/GPUState.h"
 #include "GPU/Common/FramebufferManagerCommon.h"
@@ -72,6 +74,47 @@ void BaseUpdateUniforms(UB_VS_FS_Base *ub, uint64_t dirtyUniforms, bool useBuffe
 	}
 
 	if (dirtyUniforms & DIRTY_PROJMATRIX) {
+		Matrix4x4 flippedMatrix;
+		memcpy(&flippedMatrix, gstate.projMatrix, 16 * sizeof(float));
+
+		// Per-game camera zoom hack for 3D only.
+		// 100 = neutral, >100 = zoom in, <100 = zoom out.
+		const bool perspectiveProjection = std::fabs(gstate.projMatrix[15]) < 0.5f;
+		// Keep zoom on likely world geometry and avoid 3D-style overlays (such as target indicators.)
+		// World geometry typically has fog enabled, while UI overlays don't.
+		const bool likelyWorldGeometry = gstate.isFogEnabled();
+		if (!gstate.isModeThrough() && !gstate.isModeClear() && gstate.isDepthTestEnabled() && gstate.isDepthWriteEnabled() && perspectiveProjection && likelyWorldGeometry) {
+			int cameraZoomFactor = PSP_CoreParameter().compat.flags().CameraZoomFactor;
+			if (cameraZoomFactor > 0) {
+				const int userZoomPercent = std::clamp(g_Config.iGE2CameraZoomPercent, 50, 200);
+				cameraZoomFactor = cameraZoomFactor * userZoomPercent / 100;
+				if (cameraZoomFactor != 100) {
+					const float zoomScale = (float)cameraZoomFactor * (1.0f / 100.0f);
+					flippedMatrix.xx *= zoomScale;
+					flippedMatrix.yy *= zoomScale;
+				}
+			}
+		}
+
+		const bool invertedY = gstate_c.vpHeight < 0;
+		if (invertedY) {
+			flippedMatrix[1] = -flippedMatrix[1];
+			flippedMatrix[5] = -flippedMatrix[5];
+			flippedMatrix[9] = -flippedMatrix[9];
+			flippedMatrix[13] = -flippedMatrix[13];
+		}
+		const bool invertedX = gstate_c.vpWidth < 0;
+		if (invertedX) {
+			flippedMatrix[0] = -flippedMatrix[0];
+			flippedMatrix[4] = -flippedMatrix[4];
+			flippedMatrix[8] = -flippedMatrix[8];
+			flippedMatrix[12] = -flippedMatrix[12];
+		}
+		if (flipViewport) {
+			ConvertProjMatrixToD3D11(flippedMatrix);
+		} else {
+			ConvertProjMatrixToVulkan(flippedMatrix);
+		}
 		CopyMatrix4x4(ub->proj, gstate.projMatrix);
 		ub->rotation = useBufferedRendering ? 0 : (float)g_display.rotation;
 	}
